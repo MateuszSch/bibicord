@@ -26,6 +26,8 @@ pub enum Event {
     PeerLeft { id: EndpointId },
     PeerStream { id: EndpointId, info: Option<StreamInfo> },
     PeerVoice { id: EndpointId, on: bool },
+    PeerMute { id: EndpointId, muted: bool, deafened: bool },
+    RoomName(String),
     Chat { from: Option<EndpointId>, name: String, text: String },
     MyStream(Option<StreamInfo>),
     MyVoice(bool),
@@ -65,6 +67,13 @@ struct PeerConn {
     stream: Option<StreamInfo>,
 }
 
+/// Local mute/deafen state, kept even when not in voice.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MuteState {
+    pub muted: bool,
+    pub deafened: bool,
+}
+
 struct Watch {
     peer: EndpointId,
     task: tokio::task::JoinHandle<()>,
@@ -74,6 +83,9 @@ struct Watch {
 struct State {
     in_room: bool,
     name: String,
+    room: String,
+    mute: MuteState,
+    devices: crate::voice::Devices,
     peers: HashMap<EndpointId, PeerConn>,
     dialing: HashSet<EndpointId>,
     broadcast: Option<video::encode::Broadcast>,
@@ -156,6 +168,10 @@ impl Node {
         Ok(ep)
     }
 
+    pub fn my_id(&self) -> Option<EndpointId> {
+        self.0.endpoint.get().map(|(e, _)| e.id())
+    }
+
     /// Graceful shutdown (call from a non-async thread).
     pub fn shutdown(&self) {
         self.leave();
@@ -177,12 +193,14 @@ impl Node {
 
     // ---------------------------------------------------------------- room
 
-    pub fn create_room(&self, name: String) {
+    pub fn create_room(&self, name: String, room: String) {
         {
             let mut s = self.0.state.lock().unwrap();
             s.in_room = true;
             s.name = name;
+            s.room = room.clone();
         }
+        self.emit(Event::RoomName(room));
         let n = self.clone();
         self.spawn(async move { n.publish_ticket().await });
     }
@@ -193,6 +211,7 @@ impl Node {
             let mut s = self.0.state.lock().unwrap();
             s.in_room = true;
             s.name = name;
+            s.room.clear();
         }
         let n = self.clone();
         self.spawn(async move {
@@ -215,6 +234,7 @@ impl Node {
     pub fn leave(&self) {
         let mut s = self.0.state.lock().unwrap();
         s.in_room = false;
+        s.room.clear();
         for (_, p) in s.peers.drain() {
             p.conn.close(0u32.into(), b"bye");
         }
@@ -240,9 +260,12 @@ impl Node {
         let s = self.0.state.lock().unwrap();
         Msg::Hello {
             name: s.name.clone(),
+            room: s.room.clone(),
             peers: s.peers.keys().copied().collect(),
             stream: s.broadcast.as_ref().map(|b| b.info.clone()),
             voice: s.voice.is_some(),
+            muted: s.mute.muted,
+            deafened: s.mute.deafened,
         }
     }
 
@@ -301,7 +324,7 @@ impl Node {
             (s, r)
         };
         proto::write_msg(&mut send, &self.hello()).await?;
-        let Msg::Hello { name, peers, stream, voice } =
+        let Msg::Hello { name, room, peers, stream, voice, muted, deafened } =
             tokio::time::timeout(Duration::from_secs(15), proto::read_msg(&mut recv)).await??
         else {
             bail!("expected hello");
@@ -309,8 +332,13 @@ impl Node {
 
         let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
         let stable = conn.stable_id();
+        let mut adopted_room = None;
         {
             let mut s = self.0.state.lock().unwrap();
+            if s.room.is_empty() && !room.is_empty() {
+                s.room = room.clone();
+                adopted_room = Some(room);
+            }
             if !s.in_room {
                 conn.close(2u32.into(), b"left");
                 return Ok(());
@@ -339,9 +367,13 @@ impl Node {
                 },
             );
         }
+        if let Some(room) = adopted_room {
+            self.emit(Event::RoomName(room));
+        }
         self.emit(Event::PeerJoined { id: remote, name: name.clone() });
         self.emit(Event::PeerStream { id: remote, info: stream });
         self.emit(Event::PeerVoice { id: remote, on: voice });
+        self.emit(Event::PeerMute { id: remote, muted, deafened });
 
         // Complete the mesh.
         for p in peers {
@@ -431,6 +463,9 @@ impl Node {
                         }
                     }
                     self.emit(Event::PeerVoice { id: remote, on });
+                }
+                Msg::Mute { muted, deafened } => {
+                    self.emit(Event::PeerMute { id: remote, muted, deafened });
                 }
                 Msg::Hello { .. } => {}
             }
@@ -611,7 +646,13 @@ impl Node {
         let n = self.clone();
         self.spawn(async move {
             let (tx, mut rx) = mpsc::unbounded_channel::<Bytes>();
-            match tokio::task::spawn_blocking(move || Voice::start(tx)).await {
+            let (devices, mute) = {
+                let s = n.0.state.lock().unwrap();
+                (s.devices.clone(), s.mute)
+            };
+            match tokio::task::spawn_blocking(move || Voice::start(tx, devices, mute.muted || mute.deafened, mute.deafened))
+                .await
+            {
                 Ok(Ok(v)) => {
                     n.0.state.lock().unwrap().voice = Some(Arc::new(v));
                     n.broadcast_msg(Msg::Voice(true));
@@ -634,6 +675,39 @@ impl Node {
                 Err(e) => n.emit(Event::Error(format!("Głos: {e}"))),
             }
         });
+    }
+
+    pub fn set_mute(&self, mute: MuteState) {
+        let voice = {
+            let mut s = self.0.state.lock().unwrap();
+            s.mute = mute;
+            s.voice.clone()
+        };
+        if let Some(v) = voice {
+            v.set_muted(mute.muted || mute.deafened);
+            v.set_deafened(mute.deafened);
+        }
+        self.broadcast_msg(Msg::Mute { muted: mute.muted, deafened: mute.deafened });
+    }
+
+    pub fn devices(&self) -> crate::voice::Devices {
+        self.0.state.lock().unwrap().devices.clone()
+    }
+
+    /// Changes audio devices; reconnects voice if currently connected.
+    pub fn set_devices(&self, devices: crate::voice::Devices) {
+        let in_voice = {
+            let mut s = self.0.state.lock().unwrap();
+            if s.devices == devices {
+                return;
+            }
+            s.devices = devices;
+            s.voice.is_some()
+        };
+        if in_voice {
+            self.0.state.lock().unwrap().voice = None;
+            self.join_voice();
+        }
     }
 
     pub fn leave_voice(&self) {
@@ -685,7 +759,7 @@ mod tests {
 
         let (a, arx) = node();
         let (b, brx) = node();
-        a.create_room("Ala".into());
+        a.create_room("Ala".into(), "Test".into());
         let Event::Ticket(t) = wait_for(&arx, 20, |e| matches!(e, Event::Ticket(_))).await else {
             unreachable!()
         };
@@ -712,7 +786,7 @@ mod tests {
         else {
             panic!("stream failed to start")
         };
-        println!("streaming: {} via {}", info.summary(), info.encoder);
+        println!("streaming: {info:?}");
         let Event::PeerStream { id, .. } =
             wait_for(&brx, 10, |e| matches!(e, Event::PeerStream { info: Some(_), .. })).await
         else {

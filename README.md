@@ -4,6 +4,30 @@ Minimalistyczny „Discord” w Ruście, **bez serwera**: czat tekstowy, głos
 i udostępnianie ekranu w jakości źródła. Działa na Windows 10, Windows 11
 i macOS 14+.
 
+![Oglądanie streamu](docs/screenshots/4-watch.png)
+
+## Interfejs
+
+Ciemny, zwarty układ wzorowany na Discordzie: lista kanałów i uczestników po
+lewej, czat albo scena głosowa w środku, panel połączenia i własny profil
+(mikrofon, słuchawki, ustawienia) na dole paska.
+
+* **Design system** – zasady w [`DESIGN.md`](DESIGN.md), tokeny w
+  `src/ui/theme.rs` (kolory powierzchni, tekstu i stanów, skala typografii,
+  odstępy w siatce 4 px, promienie, cienie, czas animacji 120 ms).
+* **Typografia** – Inter (Regular/Medium/SemiBold/Bold) wbudowany w binarkę.
+* **Ikony** – Phosphor (warianty regular i fill).
+* **Komponenty** – `src/ui/widgets.rs`: przyciski, przyciski okrągłe, chipy,
+  pola tekstowe, awatary z pierścieniem mówienia, odznaki NA ŻYWO, wiersze
+  listy, menu, modale.
+* **Ekrany** – start, czat (wiadomości grupowane), scena głosowa z kafelkami
+  16:9, oglądanie streamu z paskiem uczestników i czatem obok, okna
+  „Udostępnij ekran”, „Zaproś” i „Ustawienia głosu”.
+
+| Czat | Kanał głosowy | Udostępnianie ekranu |
+|---|---|---|
+| ![](docs/screenshots/2-chat.png) | ![](docs/screenshots/3-voice.png) | ![](docs/screenshots/5-dialog-golive.png) |
+
 ## Jak to działa
 
 - **Sieć: P2P.** Każdy uczestnik łączy się z każdym bezpośrednio
@@ -56,7 +80,9 @@ cargo test -- --ignored          # end-to-end: 3 węzły przez prawdziwą sieć,
 ```
 
 Zmienne pomocnicze: `BIBICORD_TEST_SOURCE=1` streamuje obraz testowy zamiast
-ekranu, `BIBICORD_DEBUG=1` włącza szczegółowe logi.
+ekranu, `BIBICORD_DEBUG=1` włącza szczegółowe logi, `BIBICORD_FAKE_AUDIO=1` uruchamia
+głos bez urządzeń audio (`BIBICORD_FAKE_TONE=1` dodaje sygnał testowy).
+Skryptowane uruchomienia do zrzutów ekranu opisuje nagłówek `src/demo.rs`.
 
 ## Struktura
 
@@ -68,9 +94,17 @@ ekranu, `BIBICORD_DEBUG=1` włącza szczegółowe logi.
 | `src/video/hub.rs` | rozsyłanie strumienia do widzów (klatki kluczowe, wolni widzowie) |
 | `src/video/decode.rs` | dekodowanie sprzętowe do RGBA |
 | `src/voice.rs` | mikrofon/głośniki, Opus, bufor jitter, wykrywanie mówienia |
-| `src/ui.rs` | minimalistyczny interfejs (egui) |
+| `src/ui/theme.rs` | tokeny design systemu i instalacja fontów |
+| `src/ui/widgets.rs` | komponenty |
+| `src/ui/{start,sidebar,chat,stage,dialogs}.rs` | ekrany i okna |
+| `src/demo.rs` | skryptowane uruchomienia (testy, zrzuty ekranu) |
 
-## Licencja FFmpeg
+## Licencje
+
+Font Inter: SIL Open Font License 1.1 (`assets/fonts/Inter-LICENSE.txt`).
+Ikony Phosphor: MIT.
+
+### FFmpeg
 
 Pobierane/dołączane buildy FFmpeg są na licencji GPL. Przy dystrybucji
 paczek z FFmpeg obowiązują jej warunki.

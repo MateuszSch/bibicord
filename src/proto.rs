@@ -5,7 +5,7 @@ use iroh::{EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-pub const ALPN: &[u8] = b"bibicord/1";
+pub const ALPN: &[u8] = b"bibicord/2";
 
 /// First byte of every bidirectional stream.
 pub const TAG_CONTROL: u8 = 0;
@@ -50,35 +50,26 @@ pub struct StreamInfo {
     pub encoder: String,
 }
 
-impl StreamInfo {
-    pub fn summary(&self) -> String {
-        let res = if self.width > 0 {
-            format!("{}×{} ", self.width, self.height)
-        } else {
-            String::new()
-        };
-        format!(
-            "{res}{} fps · {} · {} Mb/s",
-            self.fps,
-            self.codec.label(),
-            self.bitrate_kbps / 1000
-        )
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Msg {
     Hello {
         name: String,
+        room: String,
         peers: Vec<EndpointId>,
         stream: Option<StreamInfo>,
         voice: bool,
+        muted: bool,
+        deafened: bool,
     },
     Chat {
         text: String,
     },
     Stream(Option<StreamInfo>),
     Voice(bool),
+    Mute {
+        muted: bool,
+        deafened: bool,
+    },
 }
 
 pub async fn write_msg(w: &mut (impl AsyncWrite + Unpin), msg: &Msg) -> Result<()> {
