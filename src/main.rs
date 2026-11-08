@@ -4,6 +4,7 @@ mod demo;
 mod ffmpeg;
 mod net;
 mod proto;
+mod update;
 mod ui;
 mod video;
 mod voice;

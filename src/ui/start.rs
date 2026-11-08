@@ -134,10 +134,14 @@ impl App {
             }
         }
 
-        // Footer: status
+        // Footer: update + status
         ui.add_space(sp::XL);
         w::separator(ui, c::BORDER);
         ui.add_space(sp::M);
+        if self.update_available().is_some() || matches!(*self.update.lock().unwrap(), crate::update::State::Failed(_)) {
+            self.update_banner(ui);
+            ui.add_space(sp::S);
+        }
         let ff = self.ffmpeg_status.lock().unwrap().clone();
         let (dot, line) = if !self.net_ready {
             (c::WARNING, "Łączenie z siecią…".to_string())

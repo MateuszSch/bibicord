@@ -90,7 +90,96 @@ fn device_combo(ui: &mut Ui, id: &str, value: &mut Option<String>, list: &[crate
     *value != before
 }
 
+/// One line of release notes with **bold** and `code` spans.
+fn rich_line(text: &str, color: egui::Color32) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    let (mut bold, mut code) = (false, false);
+    let mut buf = String::new();
+    let flush = |job: &mut egui::text::LayoutJob, buf: &mut String, bold: bool, code: bool| {
+        if buf.is_empty() {
+            return;
+        }
+        let (font, col) = if code {
+            (egui::FontId::monospace(12.5), c::TEXT)
+        } else if bold {
+            (theme::font(13.0, W::SemiBold), c::TEXT)
+        } else {
+            (f(ty::SMALL), color)
+        };
+        job.append(buf, 0.0, egui::TextFormat { font_id: font, color: col, ..Default::default() });
+        buf.clear();
+    };
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '`' {
+            flush(&mut job, &mut buf, bold, code);
+            code = !code;
+        } else if ch == '*' && chars.peek() == Some(&'*') && !code {
+            chars.next();
+            flush(&mut job, &mut buf, bold, code);
+            bold = !bold;
+        } else {
+            buf.push(ch);
+        }
+    }
+    flush(&mut job, &mut buf, bold, code);
+    job.wrap.max_width = f32::INFINITY;
+    job
+}
+
+fn progress_bar(ui: &mut Ui, p: f32) {
+    let w = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(w, 6.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 3, c::BG_SELECTED);
+    let mut done = rect;
+    done.set_width(w * p.clamp(0.0, 1.0));
+    ui.painter().rect_filled(done, 3, c::BRAND);
+}
+
 impl App {
+    /// Compact "update available" card. Opens the update dialog on click.
+    pub(crate) fn update_banner(&mut self, ui: &mut Ui) {
+        use crate::update::State;
+        let state = self.update.lock().unwrap().clone();
+        let (title, sub, p) = match &state {
+            State::Available(r) => (format!("Dostępna wersja {}", r.version), "Kliknij, aby zaktualizować".to_string(), None),
+            State::Downloading(r, p) => (format!("Pobieranie {}", r.version), format!("{:.0}%", p * 100.0), Some(*p)),
+            State::Installing(r) => (format!("Instalowanie {}", r.version), "Za chwilę restart…".to_string(), Some(1.0)),
+            State::Failed(e) => ("Aktualizacja nie powiodła się".to_string(), e.clone(), None),
+            _ => return,
+        };
+        let failed = matches!(state, State::Failed(_));
+        let w_ = ui.available_width();
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(w_, 46.0), egui::Sense::click());
+        let t = w::hover_t(ui, &resp);
+        let accent = if failed { c::DANGER } else { c::SUCCESS };
+        ui.painter().rect_filled(rect, r::CONTROL, theme::alpha(accent, 0.12 + 0.06 * t));
+        ui.painter().rect_stroke(rect, r::CONTROL, Stroke::new(1.0, theme::alpha(accent, 0.35)), egui::StrokeKind::Inside);
+        let icon = if failed { ic::WARNING_CIRCLE } else { ic::ARROW_CIRCLE_UP };
+        w::paint_icon(ui, rect.left_center() + Vec2::new(20.0, 0.0), icon, 20.0, accent, true);
+        let x = rect.left() + 40.0;
+        let max = rect.right() - x - 8.0;
+        w::paint_text_clipped(ui, egui::Pos2::new(x, rect.center().y - 8.0), &title, f(ty::SMALL_MEDIUM), c::TEXT, max);
+        w::paint_text_clipped(ui, egui::Pos2::new(x, rect.center().y + 9.0), &sub, f(ty::CAPTION), c::TEXT_MUTED, max);
+        if let Some(p) = p {
+            let mut bar = rect.shrink2(Vec2::new(8.0, 0.0));
+            bar.min.y = rect.bottom() - 4.0;
+            bar.max.y = rect.bottom() - 2.0;
+            bar.set_width(bar.width() * p.clamp(0.0, 1.0));
+            ui.painter().rect_filled(bar, 1, accent);
+        }
+        let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+        if resp.clicked() {
+            if failed {
+                // Retry: check again, then offer the update.
+                *self.update.lock().unwrap() = State::Idle;
+                crate::update::spawn_check(self.update.clone(), ui.ctx().clone());
+            } else {
+                self.dialog = Some(Dialog::Update);
+            }
+        }
+    }
+
     pub(crate) fn dialogs(&mut self, ctx: &egui::Context) {
         let Some(d) = self.dialog else { return };
         let modal = egui::Modal::new(egui::Id::unique(("dialog", d as u8)))
@@ -103,6 +192,7 @@ impl App {
                     Dialog::GoLive => self.go_live_ui(ui),
                     Dialog::Settings => self.settings_ui(ui),
                     Dialog::Invite => self.invite_ui(ui),
+                    Dialog::Update => self.update_ui(ui),
                 }
             });
         if modal.should_close() {
@@ -333,6 +423,81 @@ impl App {
                     w::paint_text(ui, rect.center(), Align2::CENTER_CENTER, &(n + 1).to_string(), theme::font(11.0, W::Bold), c::TEXT_SECONDARY);
                     ui.label(w::text(*step, ty::SMALL, c::TEXT_SECONDARY));
                 });
+            }
+        });
+    }
+
+    fn update_ui(&mut self, ui: &mut Ui) {
+        use crate::update::State;
+        let state = self.update.lock().unwrap().clone();
+        let release = match &state {
+            State::Available(r) | State::Downloading(r, _) | State::Installing(r) => r.clone(),
+            _ => {
+                self.dialog = None;
+                return;
+            }
+        };
+        let busy = matches!(state, State::Downloading(..) | State::Installing(_));
+        let title = format!("BibiCord {}", release.version);
+        let sub = format!("Masz wersję {}. Aktualizacja zajmie chwilę, aplikacja uruchomi się ponownie.", crate::update::CURRENT);
+        if header(ui, &title, &sub) && !busy {
+            self.dialog = None;
+        }
+        body(ui, |ui| {
+            w::field_label(ui, "Co nowego");
+            let notes = if release.notes.is_empty() { "Poprawki i ulepszenia.".to_string() } else { release.notes.clone() };
+            egui::Frame::new()
+                .fill(c::BG_BASE)
+                .corner_radius(r::CONTROL)
+                .inner_margin(Margin::same(12))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+                        for line in notes.lines() {
+                            let line = line.trim_end();
+                            if line.eq_ignore_ascii_case("## co nowego") {
+                                continue;
+                            }
+                            // Download/install instructions are for the web page.
+                            if line.starts_with("## Pobieranie") {
+                                break;
+                            }
+                            if let Some(h) = line.strip_prefix("## ").or_else(|| line.strip_prefix("### ")) {
+                                ui.add_space(sp::XS);
+                                ui.label(w::text(h, ty::SMALL_MEDIUM, c::TEXT));
+                            } else if let Some(item) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
+                                ui.horizontal_top(|ui| {
+                                    ui.label(w::text("•", ty::SMALL, c::TEXT_MUTED));
+                                    ui.add(egui::Label::new(rich_line(item, c::TEXT_SECONDARY)).wrap());
+                                });
+                            } else if !line.is_empty() {
+                                ui.add(egui::Label::new(rich_line(line, c::TEXT_SECONDARY)).wrap());
+                            }
+                        }
+                    });
+                });
+            if let State::Downloading(_, p) = state {
+                ui.add_space(sp::M);
+                w::field_label_value(ui, "Pobieranie", &format!("{:.0}%", p * 100.0));
+                progress_bar(ui, p);
+            } else if matches!(state, State::Installing(_)) {
+                ui.add_space(sp::M);
+                ui.label(w::text("Instalowanie… aplikacja za chwilę uruchomi się ponownie.", ty::SMALL, c::TEXT_SECONDARY));
+            }
+        });
+        let ctx = ui.ctx().clone();
+        footer(ui, |ui| {
+            let label = if busy { "Aktualizowanie…" } else { "Zaktualizuj teraz" };
+            if Button::new(label, Kind::Primary).icon(ic::DOWNLOAD_SIMPLE).enabled(!busy).show(ui).clicked() {
+                self.start_update(&ctx);
+            }
+            if !busy {
+                if Button::new("Później", Kind::Ghost).show(ui).clicked() {
+                    self.dialog = None;
+                }
+                if IconButton::new(ic::ARROW_SQUARE_OUT, "Otwórz stronę wydania").show(ui).clicked() {
+                    ctx.open_url(egui::OpenUrl::new_tab(release.page.clone()));
+                }
             }
         });
     }

@@ -1,5 +1,11 @@
 name: build
 
+# Every push to main: tests + both installers as workflow artifacts.
+# Tag v*: a GitHub Release with fixed asset names, so
+#   https://github.com/Minfdev/bibicord/releases/latest/download/BibiCord-Setup.exe
+#   https://github.com/Minfdev/bibicord/releases/latest/download/BibiCord.dmg
+# always point at the newest version (the in-app updater uses the same files).
+
 on:
   push:
     branches: [main]
@@ -7,15 +13,19 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
-      - name: Installer (BibiCord-Setup-*.exe)
+      - name: Installer
         shell: bash
         env:
           TARGET: x86_64-pc-windows-msvc
@@ -23,25 +33,28 @@ jobs:
           export PATH="/c/Program Files (x86)/NSIS:$PATH"
           command -v makensis || choco install nsis -y --no-progress
           scripts/build-windows-installer.sh
-      - uses: actions/upload-artifact@v4
+          cp dist/BibiCord-Setup-*.exe dist/BibiCord-Setup.exe
+      - uses: actions/upload-artifact@v5
         with:
           name: BibiCord-windows
-          path: dist/BibiCord-Setup-*.exe
+          path: dist/BibiCord-Setup.exe
 
   macos:
     # Apple Silicon only.
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
-      - name: Installer (BibiCord-*.dmg)
-        run: scripts/build-macos-dmg.sh
-      - uses: actions/upload-artifact@v4
+      - name: Installer
+        run: |
+          scripts/build-macos-dmg.sh
+          cp dist/BibiCord-*.dmg dist/BibiCord.dmg
+      - uses: actions/upload-artifact@v5
         with:
           name: BibiCord-macos
-          path: dist/BibiCord-*.dmg
+          path: dist/BibiCord.dmg
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -50,12 +63,19 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
         with:
           path: dist
           merge-multiple: true
+      - name: Checksums and notes
+        run: |
+          cd dist && sha256sum BibiCord-Setup.exe BibiCord.dmg > SHA256SUMS.txt && cd ..
+          scripts/release-notes.sh "${GITHUB_REF_NAME#v}" > notes.md
       - uses: softprops/action-gh-release@v2
         with:
+          body_path: notes.md
           files: |
-            dist/*.exe
-            dist/*.dmg
+            dist/BibiCord-Setup.exe
+            dist/BibiCord.dmg
+            dist/SHA256SUMS.txt

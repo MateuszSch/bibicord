@@ -232,11 +232,13 @@ impl Node {
             };
             if let Err(e) = n.dial(addr).await {
                 tracing::info!("join failed: {e:#}");
-                n.emit(Event::Error(
+                let msg = if format!("{e:#}").contains("doesn't support any known protocol") {
+                    "Znajomy ma inną wersję BibiCord. Zaktualizujcie aplikację do najnowszej wersji."
+                } else {
                     "Nie udało się dołączyć. Sprawdź kod i czy osoba, która go wysłała, \
                      ma otwarty BibiCord."
-                        .into(),
-                ));
+                };
+                n.emit(Event::Error(msg.into()));
             }
             n.publish_ticket().await;
         });
@@ -860,3 +862,4 @@ mod tests {
         b.leave();
     }
 }
+

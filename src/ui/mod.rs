@@ -54,6 +54,7 @@ pub(crate) enum Dialog {
     GoLive,
     Settings,
     Invite,
+    Update,
 }
 
 pub struct App {
@@ -98,6 +99,8 @@ pub struct App {
 
     pub(crate) status: String,
     pub(crate) error: Option<(String, Instant)>,
+    pub(crate) update: crate::update::Shared,
+    update_checked: Option<Instant>,
     demo: Option<crate::demo::Demo>,
 }
 
@@ -168,6 +171,8 @@ impl App {
             fullscreen: false,
             status: String::new(),
             error: None,
+            update: Default::default(),
+            update_checked: None,
             demo: crate::demo::Demo::from_env(),
         }
     }
@@ -395,7 +400,43 @@ impl App {
             });
     }
 
+    /// Checks for updates on start and every 6 hours (not in demo runs).
+    fn poll_update(&mut self, ctx: &egui::Context) {
+        if std::env::var_os("BIBICORD_NO_UPDATE").is_some() {
+            return;
+        }
+        let due = self.update_checked.is_none_or(|t| t.elapsed() > Duration::from_secs(6 * 3600));
+        if due && (self.demo.is_none() || std::env::var_os("BIBICORD_DEMO_UPDATE").is_some()) {
+            self.update_checked = Some(Instant::now());
+            crate::update::spawn_check(self.update.clone(), ctx.clone());
+        }
+    }
+
+    /// The release on offer, if any.
+    pub(crate) fn update_available(&self) -> Option<crate::update::Release> {
+        use crate::update::State;
+        match &*self.update.lock().unwrap() {
+            State::Available(r) | State::Downloading(r, _) | State::Installing(r) => Some(r.clone()),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn start_update(&mut self, ctx: &egui::Context) {
+        use crate::update::State;
+        let r = match &*self.update.lock().unwrap() {
+            State::Available(r) => r.clone(),
+            _ => return,
+        };
+        crate::update::spawn_install(self.update.clone(), r, ctx.clone());
+    }
+
     fn run_demo(&mut self, ctx: &egui::Context) {
+        // Scripted update test: install as soon as an update is offered.
+        if std::env::var_os("BIBICORD_DEMO_AUTOUPDATE").is_some()
+            && matches!(*self.update.lock().unwrap(), crate::update::State::Available(_))
+        {
+            self.start_update(ctx);
+        }
         let Some(mut demo) = self.demo.take() else { return };
         let d = &mut demo;
         ctx.request_repaint_after(Duration::from_millis(200));
@@ -457,6 +498,7 @@ impl App {
                 Some("golive") => self.open_go_live(),
                 Some("settings") => self.open_settings(),
                 Some("invite") => self.dialog = Some(Dialog::Invite),
+                Some("update") => self.dialog = Some(Dialog::Update),
                 _ => {}
             }
         }
@@ -484,6 +526,7 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         self.handle_events(&ctx);
         self.run_demo(&ctx);
+        self.poll_update(&ctx);
         if self.chat_visible() {
             self.unread = 0;
         }
@@ -494,7 +537,10 @@ impl eframe::App for App {
             self.toggle_fullscreen(&ctx);
         }
         match self.screen {
-            Screen::Start => self.start_screen(ui),
+            Screen::Start => {
+                self.start_screen(ui);
+                self.dialogs(&ctx);
+            }
             Screen::Room => {
                 self.room_ui(ui);
                 self.dialogs(&ctx);

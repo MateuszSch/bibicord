@@ -5,6 +5,9 @@
 ; Per-user install (no administrator prompt) into %LOCALAPPDATA%\Programs\BibiCord,
 ; like Discord. Start menu + optional desktop shortcut, uninstaller in
 ; "Apps & features".
+;
+; In-app updates run `BibiCord-Setup.exe /S /RESTART`: silent install over
+; the existing one, then BibiCord is started again.
 
 Unicode true
 ManifestDPIAware true
@@ -32,6 +35,7 @@ VIAddVersionKey /LANG=0 "LegalCopyright" "${APP}"
 
 !include "MUI2.nsh"
 !include "FileFunc.nsh"
+!include "LogicLib.nsh"
 
 !define MUI_ICON "${SRC}\icon.ico"
 !define MUI_UNICON "${SRC}\icon.ico"
@@ -97,6 +101,14 @@ Section "Install"
   ${GetSize} "$INSTDIR" "/S=0K" $0 $1 $2
   IntFmt $0 "0x%08X" $0
   WriteRegDWORD HKCU "${UNINST_KEY}" "EstimatedSize" "$0"
+
+  ; In-app update: start the new version once the files are in place.
+  ${GetParameters} $R0
+  ClearErrors
+  ${GetOptions} $R0 "/RESTART" $R1
+  ${IfNot} ${Errors}
+    Exec '"$INSTDIR\${EXE}"'
+  ${EndIf}
 SectionEnd
 
 Function DesktopShortcut

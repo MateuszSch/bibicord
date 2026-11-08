@@ -320,6 +320,12 @@ impl App {
             .inner_margin(egui::Margin::same(sp::S as i8))
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(sp::XS, sp::S);
+                if !matches!(
+                    *self.update.lock().unwrap(),
+                    crate::update::State::Idle | crate::update::State::Checking | crate::update::State::UpToDate
+                ) {
+                    self.update_banner(ui);
+                }
                 if self.my_voice || self.voice_starting || self.my_stream.is_some() || self.stream_starting {
                     self.voice_panel(ui);
                     w::separator(ui, c::BORDER);

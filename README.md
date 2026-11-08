@@ -4,6 +4,16 @@ Minimalistyczny „Discord” w Ruście, **bez serwera**: czat tekstowy, głos
 i udostępnianie ekranu w jakości źródła. Działa na Windows 10, Windows 11
 i macOS 14+.
 
+## Pobierz
+
+| System | Instalator |
+|---|---|
+| Windows 10 / 11 (x64) | [**BibiCord-Setup.exe**](https://github.com/Minfdev/bibicord/releases/latest/download/BibiCord-Setup.exe) |
+| macOS 14+ (Apple Silicon) | [**BibiCord.dmg**](https://github.com/Minfdev/bibicord/releases/latest/download/BibiCord.dmg) |
+
+Linki zawsze wskazują najnowszą wersję. Zainstalowana aplikacja sama
+proponuje aktualizację. Wszystkie wersje: [Releases](https://github.com/Minfdev/bibicord/releases).
+
 ![Oglądanie streamu](docs/screenshots/4-watch.png)
 
 ## Interfejs
@@ -82,7 +92,27 @@ pobierane przy pierwszym uruchomieniu):
 * **macOS** – obraz DMG: otwórz i przeciągnij BibiCord do folderu Aplikacje.
 
 Workflow `.github/workflows/release.yml` buduje oba instalatory przy każdym
-pushu; tag `v*` publikuje je jako release na GitHubie.
+pushu; tag `v*` publikuje je jako release na GitHubie (`BibiCord-Setup.exe`,
+`BibiCord.dmg`, `SHA256SUMS.txt`).
+
+### Wydanie nowej wersji
+
+1. Podnieś `version` w `Cargo.toml`.
+2. Opisz zmiany w `docs/releases/<wersja>.md` (pojawią się na stronie
+   release i w oknie aktualizacji w aplikacji).
+3. `git tag v<wersja> && git push origin main v<wersja>`.
+
+### Aktualizacje w aplikacji
+
+Przy starcie i co 6 godzin aplikacja pyta GitHub API o najnowszy release.
+Gdy jest nowszy, w pasku bocznym (i na ekranie startowym) pojawia się baner.
+Kliknięcie pobiera instalator, sprawdza jego sumę SHA-256 z
+`SHA256SUMS.txt` i instaluje:
+
+* Windows: `BibiCord-Setup.exe /S /RESTART` – cicha instalacja i restart.
+* macOS: nowa paczka `.app` z DMG zastępuje starą, aplikacja startuje ponownie.
+
+`BIBICORD_NO_UPDATE=1` wyłącza sprawdzanie.
 
 **Brak podpisu wydawcy.** Instalatory nie są podpisane certyfikatem
 (Windows Authenticode / Apple Developer ID), więc przy pierwszym uruchomieniu:
