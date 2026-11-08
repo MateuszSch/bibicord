@@ -147,6 +147,16 @@ impl App {
             self.update_banner(ui);
             ui.add_space(sp::S);
         }
+        let share = Button::new("Zaproś znajomych do BibiCord", Kind::Ghost)
+            .icon(ic::USER_PLUS)
+            .width(width)
+            .height(36.0)
+            .show(ui)
+            .on_hover_text("Link do instalatora dla Windows i macOS");
+        if share.clicked() {
+            self.dialog = Some(super::Dialog::Share);
+        }
+        ui.add_space(sp::S);
         let ff = self.ffmpeg_status.lock().unwrap().clone();
         let (dot, line) = if !self.net_ready {
             (c::WARNING, "Łączenie z siecią…".to_string())

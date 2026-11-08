@@ -19,6 +19,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub const REPO: &str = "Minfdev/bibicord";
+/// Always the newest release (GitHub redirects `latest` to the current tag).
+pub const DOWNLOAD_PAGE: &str = "https://github.com/Minfdev/bibicord/releases/latest";
+pub const DOWNLOAD_WINDOWS: &str = "https://github.com/Minfdev/bibicord/releases/latest/download/BibiCord-Setup.exe";
+pub const DOWNLOAD_MACOS: &str = "https://github.com/Minfdev/bibicord/releases/latest/download/BibiCord.dmg";
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 
 /// Installer asset for this platform (fixed names, so

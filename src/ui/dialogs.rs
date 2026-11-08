@@ -5,7 +5,7 @@ use super::widgets::{self as w, Button, IconButton, Kind, ic};
 use super::{App, Dialog};
 use crate::proto::Codec;
 use eframe::egui::{self, Align, Align2, Layout, Margin, Stroke, Ui, Vec2};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const DIALOG_W: f32 = 440.0;
 
@@ -193,6 +193,7 @@ impl App {
                     Dialog::Settings => self.settings_ui(ui),
                     Dialog::Invite => self.invite_ui(ui),
                     Dialog::Update => self.update_ui(ui),
+                    Dialog::Share => self.share_ui(ui),
                 }
             });
         if modal.should_close() {
@@ -420,10 +421,7 @@ impl App {
         let ctx = ui.ctx().clone();
         body(ui, |ui| {
             w::field_label(ui, "Kod zaproszenia");
-            let copied = self.copied_at.is_some_and(|t| t.elapsed() < Duration::from_secs(2));
-            if copied {
-                ctx.request_repaint_after(Duration::from_millis(250));
-            }
+            let copied = self.was_copied(&ctx, "code");
             egui::Frame::new()
                 .fill(c::BG_BASE)
                 .corner_radius(r::CONTROL)
@@ -446,9 +444,8 @@ impl App {
                         };
                         let b = Button::new(label, kind).icon(icon).width(100.0).enabled(self.ticket.is_some()).show(ui);
                         if b.clicked() {
-                            if let Some(t) = &self.ticket {
-                                ctx.copy_text(t.clone());
-                                self.copied_at = Some(Instant::now());
+                            if let Some(t) = self.ticket.clone() {
+                                self.copy(&ctx, "code", t);
                             }
                         }
                     });
@@ -468,6 +465,128 @@ impl App {
                     w::paint_text(ui, rect.center(), Align2::CENTER_CENTER, &(n + 1).to_string(), theme::font(11.0, W::Bold), c::TEXT_SECONDARY);
                     ui.label(w::text(*step, ty::SMALL, c::TEXT_SECONDARY));
                 });
+            }
+        });
+        // Friends without the app: one message with installers + this code.
+        let copied = self.was_copied(&ctx, "invite_msg");
+        let mut open_share = false;
+        footer(ui, |ui| {
+            let (label, kind, icon) = if copied {
+                ("Skopiowano", Kind::Success, ic::CHECK)
+            } else {
+                ("Kopiuj z linkiem", Kind::Secondary, ic::LINK)
+            };
+            let b = Button::new(label, kind).icon(icon).enabled(self.ticket.is_some()).show(ui);
+            if b.on_hover_text("Wiadomość z linkami do instalatorów i kodem pokoju").clicked() {
+                let m = self.share_message();
+                self.copy(&ctx, "invite_msg", m);
+            }
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.add_space(sp::S);
+                ui.label(w::text("Znajomy nie ma BibiCord?", ty::SMALL, c::TEXT_MUTED));
+                if ui
+                    .link(w::text("Więcej", ty::SMALL_MEDIUM, c::BRAND))
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    open_share = true;
+                }
+            });
+        });
+        if open_share {
+            self.dialog = Some(Dialog::Share);
+        }
+    }
+
+    /// "Invite friends to BibiCord": download links to send to people
+    /// who don't have the app yet.
+    fn share_ui(&mut self, ui: &mut Ui) {
+        use crate::update::{DOWNLOAD_MACOS, DOWNLOAD_PAGE, DOWNLOAD_WINDOWS};
+        if header(
+            ui,
+            "Zaproś znajomych do BibiCord",
+            "Wyślij link. Instalacja to jeden plik, bez zakładania konta.",
+        ) {
+            self.dialog = None;
+        }
+        let ctx = ui.ctx().clone();
+        body(ui, |ui| {
+            w::field_label(ui, "Link do pobrania");
+            let copied = self.was_copied(&ctx, "page");
+            egui::Frame::new()
+                .fill(c::BG_BASE)
+                .corner_radius(r::CONTROL)
+                .inner_margin(Margin { left: 12, right: 6, top: 6, bottom: 6 })
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let avail = ui.available_width() - 104.0;
+                        let (rect, _) = ui.allocate_exact_size(Vec2::new(avail, 38.0), egui::Sense::hover());
+                        let shown = DOWNLOAD_PAGE.trim_start_matches("https://");
+                        w::paint_text_clipped(ui, rect.left_center(), shown, f(ty::SMALL_MEDIUM), c::TEXT, avail);
+                        let (label, kind, icon) = if copied {
+                            ("Skopiowano", Kind::Success, ic::CHECK)
+                        } else {
+                            ("Kopiuj", Kind::Primary, ic::COPY)
+                        };
+                        if Button::new(label, kind).icon(icon).width(100.0).show(ui).clicked() {
+                            self.copy(&ctx, "page", DOWNLOAD_PAGE.into());
+                        }
+                    });
+                });
+            ui.label(w::text(
+                "Zawsze prowadzi do najnowszej wersji. Znajomy wybiera plik dla swojego systemu.",
+                ty::SMALL,
+                c::TEXT_MUTED,
+            ));
+
+            ui.add_space(sp::M);
+            w::field_label(ui, "Bezpośrednio do instalatora");
+            for (key, icon, name, file, url) in [
+                ("win", ic::WINDOWS_LOGO, "Windows 10 / 11", "BibiCord-Setup.exe", DOWNLOAD_WINDOWS),
+                ("mac", ic::APPLE_LOGO, "macOS 14+ · Apple Silicon", "BibiCord.dmg", DOWNLOAD_MACOS),
+            ] {
+                let copied = self.was_copied(&ctx, key);
+                egui::Frame::new()
+                    .fill(c::BG_RAISED)
+                    .corner_radius(r::CONTROL)
+                    .inner_margin(Margin { left: 12, right: 6, top: 6, bottom: 6 })
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(w::icon(icon, 22.0, c::TEXT_SECONDARY));
+                            ui.add_space(sp::XS);
+                            ui.vertical(|ui| {
+                                ui.label(w::text(name, ty::LABEL, c::TEXT));
+                                ui.label(w::text(file, ty::CAPTION, c::TEXT_MUTED));
+                            });
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                let (icon, tip) = if copied { (ic::CHECK, "Skopiowano") } else { (ic::LINK, "Kopiuj link") };
+                                let col = if copied { c::SUCCESS } else { c::TEXT_SECONDARY };
+                                if IconButton::new(icon, tip).color(col).show(ui).clicked() {
+                                    self.copy(&ctx, key, url.into());
+                                }
+                            });
+                        });
+                    });
+            }
+        });
+        let copied = self.was_copied(&ctx, "share_msg");
+        footer(ui, |ui| {
+            let (label, kind, icon) = if copied {
+                ("Skopiowano", Kind::Success, ic::CHECK)
+            } else {
+                ("Kopiuj wiadomość", Kind::Primary, ic::CHAT_TEXT)
+            };
+            let tip = if self.screen == super::Screen::Room && self.ticket.is_some() {
+                "Tekst z linkami do obu instalatorów i kodem tego pokoju"
+            } else {
+                "Tekst z linkami do obu instalatorów"
+            };
+            if Button::new(label, kind).icon(icon).show(ui).on_hover_text(tip).clicked() {
+                let m = self.share_message();
+                self.copy(&ctx, "share_msg", m);
+            }
+            if Button::new("Otwórz stronę", Kind::Ghost).icon(ic::ARROW_SQUARE_OUT).show(ui).clicked() {
+                ctx.open_url(egui::OpenUrl::new_tab(DOWNLOAD_PAGE));
             }
         });
     }

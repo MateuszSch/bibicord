@@ -110,6 +110,9 @@ impl App {
                 if w::menu_item(ui, "Zaproś znajomych", ic::USER_PLUS, false).clicked() {
                     action = Some(0);
                 }
+                if w::menu_item(ui, "Wyślij link do BibiCord", ic::DOWNLOAD_SIMPLE, false).clicked() {
+                    action = Some(3);
+                }
                 if w::menu_item(ui, "Ustawienia", ic::GEAR_SIX, false).clicked() {
                     action = Some(1);
                 }
@@ -124,6 +127,7 @@ impl App {
             Some(0) => self.dialog = Some(Dialog::Invite),
             Some(1) => self.open_settings(),
             Some(2) => self.leave_room(&ui.ctx().clone()),
+            Some(3) => self.dialog = Some(Dialog::Share),
             _ => {}
         }
     }

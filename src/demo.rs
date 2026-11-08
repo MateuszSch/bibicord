@@ -3,7 +3,7 @@
 //! (writes invite), `BIBICORD_DEMO_JOIN=<file>` (reads invite),
 //! `BIBICORD_DEMO_CHAT=a|b`, `BIBICORD_DEMO_STREAM=1`, `BIBICORD_DEMO_WATCH=1`,
 //! `BIBICORD_DEMO_VOICE=1`, `BIBICORD_DEMO_MUTE=1`, `BIBICORD_DEMO_VIEW=voice`,
-//! `BIBICORD_DEMO_STAGE_CHAT=1`, `BIBICORD_DEMO_DIALOG=golive|settings|invite`,
+//! `BIBICORD_DEMO_STAGE_CHAT=1`, `BIBICORD_DEMO_DIALOG=golive|settings|invite|update|share`,
 //! `BIBICORD_DEMO_SHOT=<png>` + `BIBICORD_DEMO_SHOT_AFTER=<secs>`.
 
 use std::path::PathBuf;

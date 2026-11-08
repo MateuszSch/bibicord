@@ -55,6 +55,7 @@ pub(crate) enum Dialog {
     Settings,
     Invite,
     Update,
+    Share,
 }
 
 pub struct App {
@@ -71,7 +72,7 @@ pub struct App {
     pub(crate) ticket_input: String,
     pub(crate) join_error: Option<String>,
     pub(crate) ticket: Option<String>,
-    pub(crate) copied_at: Option<Instant>,
+    pub(crate) copied: Option<(&'static str, Instant)>,
     pub(crate) room: String,
     pub(crate) my_id: Option<EndpointId>,
 
@@ -149,7 +150,7 @@ impl App {
             ticket_input: String::new(),
             join_error: None,
             ticket: None,
-            copied_at: None,
+            copied: None,
             room: String::new(),
             my_id: None,
             peers: Vec::new(),
@@ -200,6 +201,39 @@ impl App {
     /// Plays a UI sound on the selected output device.
     pub(crate) fn cue(&self, cue: crate::sounds::Cue) {
         self.sounds.play(cue, self.node.devices().output);
+    }
+
+    /// Copies `text` and marks the button `key` as "copied" for 2 s.
+    pub(crate) fn copy(&mut self, ctx: &egui::Context, key: &'static str, text: String) {
+        ctx.copy_text(text);
+        self.copied = Some((key, Instant::now()));
+    }
+
+    pub(crate) fn was_copied(&self, ctx: &egui::Context, key: &'static str) -> bool {
+        let on = self.copied.is_some_and(|(k, t)| k == key && t.elapsed() < Duration::from_secs(2));
+        if on {
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
+        on
+    }
+
+    /// Ready-to-send message: download links, plus the room code when in a room.
+    pub(crate) fn share_message(&self) -> String {
+        use crate::update::{DOWNLOAD_MACOS, DOWNLOAD_WINDOWS};
+        let mut m = format!(
+            "Zainstaluj BibiCord – głos, czat i streamy w jakości źródła, bez serwera.\n\
+             Windows 10/11: {DOWNLOAD_WINDOWS}\n\
+             macOS 14+ (Apple Silicon): {DOWNLOAD_MACOS}"
+        );
+        if self.screen == Screen::Room {
+            if let Some(code) = &self.ticket {
+                m.push_str(&format!(
+                    "\n\nPotem kliknij „Dołącz” i wpisz kod pokoju „{}”: {code}",
+                    self.room
+                ));
+            }
+        }
+        m
     }
 
     fn chat_visible(&self) -> bool {
@@ -541,6 +575,7 @@ impl App {
                 Some("settings") => self.open_settings(),
                 Some("invite") => self.dialog = Some(Dialog::Invite),
                 Some("update") => self.dialog = Some(Dialog::Update),
+                Some("share") => self.dialog = Some(Dialog::Share),
                 _ => {}
             }
         }
