@@ -1,0 +1,3 @@
+[env]
+# ScreenCaptureKit (needed for capture) is used with macOS 14+ APIs.
+MACOSX_DEPLOYMENT_TARGET = "14.0"
