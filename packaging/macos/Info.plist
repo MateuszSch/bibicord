@@ -6,10 +6,12 @@
   <key>CFBundleDisplayName</key><string>BibiCord</string>
   <key>CFBundleIdentifier</key><string>dev.bibicord.app</string>
   <key>CFBundleExecutable</key><string>bibicord</string>
+  <key>CFBundleIconFile</key><string>BibiCord</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
+  <key>LSApplicationCategoryType</key><string>public.app-category.social-networking</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSMicrophoneUsageDescription</key><string>BibiCord używa mikrofonu do rozmów głosowych.</string>
   <key>NSScreenCaptureUsageDescription</key><string>BibiCord przechwytuje ekran, gdy go udostępniasz.</string>

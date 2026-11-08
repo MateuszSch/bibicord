@@ -63,11 +63,33 @@ Xcode Command Line Tools. FFmpeg jest szukany obok pliku wykonywalnego,
 w `PATH` albo (przy pierwszym uruchomieniu) pobierany automatycznie.
 Można też podać własny: `BIBICORD_FFMPEG=/ścieżka/ffmpeg`.
 
-Paczki:
+## Instalatory
 
-- macOS: `scripts/bundle-macos.sh` tworzy `dist/BibiCord.app` z wbudowanym FFmpeg.
-- Windows / macOS: workflow `.github/workflows/release.yml` buduje paczki zip
-  (`BibiCord.exe` + `ffmpeg.exe`, `BibiCord.app`). Tag `v*` tworzy release.
+Każdy system instaluje się jednym plikiem z wbudowanym FFmpeg (nic nie jest
+pobierane przy pierwszym uruchomieniu):
+
+| System | Plik | Jak zbudować |
+|---|---|---|
+| Windows 10 / 11 (x64) | `dist/BibiCord-Setup-<wersja>.exe` | `scripts/build-windows-installer.sh` |
+| macOS 14+ (Apple Silicon) | `dist/BibiCord-<wersja>.dmg` | `scripts/build-macos-dmg.sh` |
+
+* **Windows** – instalator NSIS po polsku, instalacja dla bieżącego
+  użytkownika do `%LOCALAPPDATA%\Programs\BibiCord` (bez pytania o
+  uprawnienia administratora), skrót w menu Start, opcjonalnie na pulpicie,
+  deinstalacja z „Aplikacje i funkcje”. Ponowne uruchomienie instalatora
+  aktualizuje aplikację. Na macOS budowany krzyżowo (`brew install mingw-w64
+  makensis`, `rustup target add x86_64-pc-windows-gnu`).
+* **macOS** – obraz DMG: otwórz i przeciągnij BibiCord do folderu Aplikacje.
+
+Workflow `.github/workflows/release.yml` buduje oba instalatory przy każdym
+pushu; tag `v*` publikuje je jako release na GitHubie.
+
+**Brak podpisu wydawcy.** Instalatory nie są podpisane certyfikatem
+(Windows Authenticode / Apple Developer ID), więc przy pierwszym uruchomieniu:
+
+* Windows SmartScreen: „Więcej informacji” → „Uruchom mimo to”.
+* macOS: po pierwszej próbie otwarcia Ustawienia systemowe → Prywatność
+  i ochrona → „Otwórz mimo to”.
 
 Na macOS przy pierwszym streamie trzeba zezwolić na **Nagrywanie ekranu**,
 a przy głosie na **Mikrofon** (Ustawienia systemowe → Prywatność i ochrona).

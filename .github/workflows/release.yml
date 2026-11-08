@@ -15,41 +15,33 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
-      - run: cargo build --release
-      - name: Package with FFmpeg
-        shell: pwsh
+      - name: Installer (BibiCord-Setup-*.exe)
+        shell: bash
+        env:
+          TARGET: x86_64-pc-windows-msvc
         run: |
-          Invoke-WebRequest https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip -OutFile ff.zip
-          Expand-Archive ff.zip -DestinationPath ff
-          New-Item -ItemType Directory dist/BibiCord | Out-Null
-          Copy-Item target/release/bibicord.exe dist/BibiCord/BibiCord.exe
-          Copy-Item (Get-ChildItem ff -Recurse -Filter ffmpeg.exe | Select-Object -First 1).FullName dist/BibiCord/
-          Compress-Archive dist/BibiCord dist/BibiCord-windows-x64.zip
+          export PATH="/c/Program Files (x86)/NSIS:$PATH"
+          command -v makensis || choco install nsis -y --no-progress
+          scripts/build-windows-installer.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: BibiCord-windows-x64
-          path: dist/BibiCord-windows-x64.zip
+          name: BibiCord-windows
+          path: dist/BibiCord-Setup-*.exe
 
   macos:
-    strategy:
-      matrix:
-        include:
-          - runner: macos-14
-            name: macos-arm64
-          - runner: macos-13
-            name: macos-x64
-    runs-on: ${{ matrix.runner }}
+    # Apple Silicon only.
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
-      - run: scripts/bundle-macos.sh
-      - run: cd dist && ditto -c -k --keepParent BibiCord.app BibiCord-${{ matrix.name }}.zip
+      - name: Installer (BibiCord-*.dmg)
+        run: scripts/build-macos-dmg.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: BibiCord-${{ matrix.name }}
-          path: dist/BibiCord-${{ matrix.name }}.zip
+          name: BibiCord-macos
+          path: dist/BibiCord-*.dmg
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -64,4 +56,6 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.zip
+          files: |
+            dist/*.exe
+            dist/*.dmg

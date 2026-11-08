@@ -24,7 +24,12 @@ fn main() -> eframe::Result {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("BibiCord")
             .with_inner_size([1120.0, 720.0])
-            .with_min_inner_size([760.0, 480.0]),
+            .with_min_inner_size([760.0, 480.0])
+            .with_app_id("dev.bibicord.app")
+            .with_icon(
+                eframe::icon_data::from_png_bytes(include_bytes!("../packaging/icon/icon-256.png"))
+                    .expect("app icon"),
+            ),
         ..Default::default()
     };
     let res = eframe::run_native(

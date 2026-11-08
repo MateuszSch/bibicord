@@ -1,0 +1,121 @@
+; BibiCord installer for Windows 10/11.
+; Built by scripts/build-windows-installer.sh, which passes:
+;   /DVERSION=x.y.z /DSRC=<dir with bibicord.exe, ffmpeg.exe, licenses> /DOUTFILE=<setup.exe>
+;
+; Per-user install (no administrator prompt) into %LOCALAPPDATA%\Programs\BibiCord,
+; like Discord. Start menu + optional desktop shortcut, uninstaller in
+; "Apps & features".
+
+Unicode true
+ManifestDPIAware true
+SetCompressor /SOLID lzma
+SetCompressorDictSize 64
+RequestExecutionLevel user
+
+!define APP "BibiCord"
+!define EXE "bibicord.exe"
+!define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP}"
+
+Name "${APP}"
+OutFile "${OUTFILE}"
+InstallDir "$LOCALAPPDATA\Programs\${APP}"
+InstallDirRegKey HKCU "Software\${APP}" "InstallDir"
+BrandingText "${APP} ${VERSION}"
+
+VIProductVersion "${VERSION}.0"
+VIAddVersionKey /LANG=0 "ProductName" "${APP}"
+VIAddVersionKey /LANG=0 "FileDescription" "Instalator ${APP}"
+VIAddVersionKey /LANG=0 "FileVersion" "${VERSION}"
+VIAddVersionKey /LANG=0 "ProductVersion" "${VERSION}"
+VIAddVersionKey /LANG=0 "CompanyName" "${APP}"
+VIAddVersionKey /LANG=0 "LegalCopyright" "${APP}"
+
+!include "MUI2.nsh"
+!include "FileFunc.nsh"
+
+!define MUI_ICON "${SRC}\icon.ico"
+!define MUI_UNICON "${SRC}\icon.ico"
+!define MUI_ABORTWARNING
+
+!define MUI_WELCOMEPAGE_TITLE "Instalacja ${APP} ${VERSION}"
+!define MUI_WELCOMEPAGE_TEXT "Głos, czat i streamy ekranu w jakości źródła, bez serwera.$\r$\n$\r$\nInstalacja nie wymaga uprawnień administratora i zajmie kilka sekund."
+!define MUI_FINISHPAGE_RUN "$INSTDIR\${EXE}"
+!define MUI_FINISHPAGE_RUN_TEXT "Uruchom ${APP}"
+!define MUI_FINISHPAGE_SHOWREADME ""
+!define MUI_FINISHPAGE_SHOWREADME_TEXT "Utwórz skrót na pulpicie"
+!define MUI_FINISHPAGE_SHOWREADME_FUNCTION DesktopShortcut
+
+!insertmacro MUI_PAGE_WELCOME
+!insertmacro MUI_PAGE_INSTFILES
+!insertmacro MUI_PAGE_FINISH
+
+!insertmacro MUI_UNPAGE_CONFIRM
+!insertmacro MUI_UNPAGE_INSTFILES
+
+!insertmacro MUI_LANGUAGE "Polish"
+
+; Ask a running BibiCord to close, then wait for it so files can be replaced.
+!macro CloseApp
+  nsExec::Exec '"$SYSDIR\taskkill.exe" /IM ${EXE}'
+  Sleep 800
+  nsExec::Exec '"$SYSDIR\taskkill.exe" /F /IM ${EXE}'
+  ; Only our own ffmpeg.exe (by path), never other programs' FFmpeg.
+  nsExec::Exec `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "Get-Process ffmpeg -ErrorAction SilentlyContinue | Where-Object { $$_.Path -like '$INSTDIR\*' } | Stop-Process -Force"`
+  Sleep 300
+!macroend
+
+Section "Install"
+  SetShellVarContext current
+  !insertmacro CloseApp
+  SetOutPath "$INSTDIR"
+  SetOverwrite on
+  retry:
+  ClearErrors
+  File "${SRC}\${EXE}"
+  File "${SRC}\ffmpeg.exe"
+  IfErrors 0 +3
+    MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "Nie można zastąpić plików ${APP}. Zamknij aplikację i spróbuj ponownie." IDRETRY retry
+    Abort
+  File "${SRC}\icon.ico"
+  SetOutPath "$INSTDIR\licenses"
+  File /r "${SRC}\licenses\*.*"
+  SetOutPath "$INSTDIR"
+
+  CreateShortCut "$SMPROGRAMS\${APP}.lnk" "$INSTDIR\${EXE}" "" "$INSTDIR\${EXE}" 0
+  WriteUninstaller "$INSTDIR\Odinstaluj.exe"
+
+  WriteRegStr HKCU "Software\${APP}" "InstallDir" "$INSTDIR"
+  WriteRegStr HKCU "${UNINST_KEY}" "DisplayName" "${APP}"
+  WriteRegStr HKCU "${UNINST_KEY}" "DisplayVersion" "${VERSION}"
+  WriteRegStr HKCU "${UNINST_KEY}" "Publisher" "${APP}"
+  WriteRegStr HKCU "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\${EXE},0"
+  WriteRegStr HKCU "${UNINST_KEY}" "InstallLocation" "$INSTDIR"
+  WriteRegStr HKCU "${UNINST_KEY}" "UninstallString" '"$INSTDIR\Odinstaluj.exe"'
+  WriteRegStr HKCU "${UNINST_KEY}" "QuietUninstallString" '"$INSTDIR\Odinstaluj.exe" /S'
+  WriteRegDWORD HKCU "${UNINST_KEY}" "NoModify" 1
+  WriteRegDWORD HKCU "${UNINST_KEY}" "NoRepair" 1
+  ${GetSize} "$INSTDIR" "/S=0K" $0 $1 $2
+  IntFmt $0 "0x%08X" $0
+  WriteRegDWORD HKCU "${UNINST_KEY}" "EstimatedSize" "$0"
+SectionEnd
+
+Function DesktopShortcut
+  SetShellVarContext current
+  CreateShortCut "$DESKTOP\${APP}.lnk" "$INSTDIR\${EXE}" "" "$INSTDIR\${EXE}" 0
+FunctionEnd
+
+Section "Uninstall"
+  SetShellVarContext current
+  !insertmacro CloseApp
+  Delete "$INSTDIR\${EXE}"
+  Delete "$INSTDIR\ffmpeg.exe"
+  Delete "$INSTDIR\icon.ico"
+  RMDir /r "$INSTDIR\licenses"
+  Delete "$INSTDIR\Odinstaluj.exe"
+  RMDir "$INSTDIR"
+  Delete "$SMPROGRAMS\${APP}.lnk"
+  Delete "$DESKTOP\${APP}.lnk"
+  DeleteRegKey HKCU "${UNINST_KEY}"
+  DeleteRegKey HKCU "Software\${APP}"
+  ; Settings (your name) stay in %LOCALAPPDATA%\bibicord\BibiCord\data.
+SectionEnd

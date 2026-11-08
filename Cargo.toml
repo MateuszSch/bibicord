@@ -32,3 +32,6 @@ windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging"] 
 lto = "thin"
 codegen-units = 4
 strip = true
+
+[build-dependencies]
+embed-resource = "3.0.12"
