@@ -102,6 +102,8 @@ struct Inner {
     events: Events,
     state: Mutex<State>,
     pub frames: Arc<FrameSlot>,
+    /// This session's invite code; the endpoint key is derived from it.
+    code: String,
 }
 
 #[derive(Debug, Clone)]
@@ -136,6 +138,7 @@ impl Node {
             events,
             state: Mutex::new(State::default()),
             frames: Arc::new(FrameSlot::default()),
+            code: proto::new_code(),
         }));
         let n = node.clone();
         node.0.rt.spawn(async move {
@@ -157,7 +160,10 @@ impl Node {
             .0
             .endpoint
             .get_or_try_init(|| async move {
+                let code = self.0.code.clone();
+                let key = tokio::task::spawn_blocking(move || proto::code_key(&code)).await?;
                 let ep = Endpoint::builder(presets::N0)
+                    .secret_key(key)
                     .alpns(vec![ALPN.to_vec()])
                     .bind()
                     .await?;
@@ -206,7 +212,10 @@ impl Node {
     }
 
     pub fn join(&self, ticket: &str, name: String) -> Result<()> {
-        let addr = proto::decode_ticket(ticket)?;
+        let ticket = ticket.trim().to_string();
+        if proto::parse_code(&ticket).is_none() {
+            proto::decode_ticket(&ticket)?; // fails with a readable message
+        }
         {
             let mut s = self.0.state.lock().unwrap();
             s.in_room = true;
@@ -216,8 +225,18 @@ impl Node {
         let n = self.clone();
         self.spawn(async move {
             n.emit(Event::Status("Łączenie z pokojem…".into()));
+            let addr = match tokio::task::spawn_blocking(move || proto::decode_ticket(&ticket)).await {
+                Ok(Ok(a)) => a,
+                Ok(Err(e)) => return n.emit(Event::Error(format!("Nie udało się dołączyć: {e:#}"))),
+                Err(e) => return n.emit(Event::Error(format!("Nie udało się dołączyć: {e}"))),
+            };
             if let Err(e) = n.dial(addr).await {
-                n.emit(Event::Error(format!("Nie udało się dołączyć: {e:#}")));
+                tracing::info!("join failed: {e:#}");
+                n.emit(Event::Error(
+                    "Nie udało się dołączyć. Sprawdź kod i czy osoba, która go wysłała, \
+                     ma otwarty BibiCord."
+                        .into(),
+                ));
             }
             n.publish_ticket().await;
         });
@@ -226,9 +245,10 @@ impl Node {
 
     async fn publish_ticket(&self) {
         let Ok(ep) = self.endpoint().await else { return };
-        // Wait (briefly) for a home relay so the invite works across NATs.
+        // The code resolves via address lookup, which is published once the
+        // endpoint has a home relay.
         let _ = tokio::time::timeout(Duration::from_secs(8), ep.online()).await;
-        self.emit(Event::Ticket(proto::encode_ticket(&ep.addr())));
+        self.emit(Event::Ticket(proto::format_code(&self.0.code)));
     }
 
     pub fn leave(&self) {
@@ -754,7 +774,11 @@ mod tests {
     #[ignore]
     async fn e2e_chat_and_stream() {
         let _ = tracing_subscriber::fmt().with_max_level(tracing::Level::INFO).try_init();
-        unsafe { std::env::set_var("BIBICORD_TEST_SOURCE", "1") };
+        unsafe {
+            std::env::set_var("BIBICORD_TEST_SOURCE", "1");
+            std::env::set_var("BIBICORD_FAKE_AUDIO", "1");
+            std::env::set_var("BIBICORD_FAKE_TONE", "1");
+        }
         tokio::task::spawn_blocking(|| crate::ffmpeg::ensure(|_| {})).await.unwrap().unwrap();
 
         let (a, arx) = node();
@@ -776,6 +800,13 @@ mod tests {
 
         b.send_chat("cześć".into());
         wait_for(&arx, 10, |e| matches!(e, Event::Chat { text, from: Some(_), .. } if text == "cześć")).await;
+
+        // Voice both ways; it keeps running while the stream below is watched.
+        a.join_voice();
+        b.join_voice();
+        wait_for(&arx, 10, |e| matches!(e, Event::MyVoice(true))).await;
+        wait_for(&brx, 10, |e| matches!(e, Event::MyVoice(true))).await;
+        let voice_start = Instant::now();
 
         a.start_stream(video::encode::Settings {
             bitrate_kbps: 20_000,
@@ -813,6 +844,16 @@ mod tests {
             f.height
         );
         assert_eq!((f.width, f.height), (1920, 1080));
+
+        // Voice from A as heard by B (fake tone: 2 s on, 1.5 s off).
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let secs = voice_start.elapsed().as_secs_f64();
+        let st = b.voice().unwrap().stats();
+        let (_, st) = st.iter().find(|(id, _)| *id == a.my_id().unwrap()).copied().unwrap();
+        println!("voice A->B over {secs:.1} s while streaming: {st:?}");
+        let expected = secs * 50.0 * 2.0 / 3.5;
+        assert!(st.received as f64 > expected * 0.6, "too few voice packets: {st:?}");
+        assert!(st.underruns <= 2, "{st:?}");
         a.stop_stream();
         wait_for(&brx, 10, |e| matches!(e, Event::Watching(None))).await;
         a.leave();

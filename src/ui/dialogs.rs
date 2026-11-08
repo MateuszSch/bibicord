@@ -298,14 +298,12 @@ impl App {
                         let avail = ui.available_width() - 104.0;
                         let shown = self.ticket.as_deref().unwrap_or("Generowanie…");
                         let (rect, _) = ui.allocate_exact_size(Vec2::new(avail, 38.0), egui::Sense::hover());
-                        w::paint_text_clipped(
-                            ui,
-                            rect.left_center(),
-                            shown,
-                            egui::FontId::monospace(13.0),
-                            c::TEXT_BODY,
-                            avail,
-                        );
+                        let font = if self.ticket.is_some() {
+                            egui::FontId::monospace(20.0)
+                        } else {
+                            theme::font(14.0, W::Regular)
+                        };
+                        w::paint_text_clipped(ui, rect.left_center(), shown, font, c::TEXT, avail);
                         let (label, kind, icon) = if copied {
                             ("Skopiowano", Kind::Success, ic::CHECK)
                         } else {
@@ -323,7 +321,7 @@ impl App {
             ui.add_space(sp::L);
             for (n, step) in [
                 "Skopiuj kod i wyślij go znajomemu.",
-                "Znajomy wkleja kod na ekranie startowym i klika Dołącz.",
+                "Znajomy wpisuje kod na ekranie startowym i klika Dołącz.",
                 "Pokój działa, dopóki ktoś w nim jest.",
             ]
             .iter()

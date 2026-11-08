@@ -101,7 +101,7 @@ impl App {
             let resp = w::text_field(
                 ui,
                 &mut self.ticket_input,
-                "Wklej kod zaproszenia",
+                "np. K7QX-3MFA-9TZP",
                 "start_ticket",
                 width - join_w - sp::S,
             );

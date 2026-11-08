@@ -5,7 +5,7 @@ use iroh::{EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-pub const ALPN: &[u8] = b"bibicord/2";
+pub const ALPN: &[u8] = b"bibicord/3";
 
 /// First byte of every bidirectional stream.
 pub const TAG_CONTROL: u8 = 0;
@@ -15,7 +15,6 @@ pub const TAG_WATCH: u8 = 1;
 pub const DGRAM_VOICE: u8 = 1;
 
 const MAX_FRAME: usize = 1 << 20;
-const TICKET_PREFIX: &str = "bibi";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Codec {
@@ -91,22 +90,87 @@ pub async fn read_msg(r: &mut (impl AsyncRead + Unpin)) -> Result<Msg> {
     Ok(postcard::from_bytes(&buf)?)
 }
 
-/// A room invite is just the address of any member, encoded as text.
-pub fn encode_ticket(addr: &EndpointAddr) -> String {
-    let bytes = postcard::to_stdvec(addr).expect("serialize addr");
-    format!(
-        "{TICKET_PREFIX}{}",
-        data_encoding::BASE32_NOPAD.encode(&bytes).to_ascii_lowercase()
-    )
+// ------------------------------------------------------------------ invites
+//
+// An invite is a short code like `K7QX-3MFA-9TZP` (60 random bits, Crockford
+// base32). Each app session picks a code and derives its endpoint key from
+// it, so the code *is* the address: the joiner derives the same public key
+// and finds the endpoint through iroh's address lookup (pkarr / DNS). The
+// derivation is deliberately slow to make guessing codes from a public key
+// impractical.
+
+const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+const CODE_LEN: usize = 12;
+const KDF_ROUNDS: u32 = 200_000;
+
+/// A fresh random invite code (60 bits).
+pub fn new_code() -> String {
+    let rnd = iroh::SecretKey::generate().to_bytes();
+    let mut v = u64::from_le_bytes(rnd[..8].try_into().unwrap()) & ((1 << 60) - 1);
+    let mut code = String::with_capacity(CODE_LEN);
+    for _ in 0..CODE_LEN {
+        code.push(CROCKFORD[(v & 31) as usize] as char);
+        v >>= 5;
+    }
+    code
 }
 
+/// `K7QX3MFA9TZP` -> `K7QX-3MFA-9TZP`.
+pub fn format_code(code: &str) -> String {
+    code.as_bytes()
+        .chunks(4)
+        .map(|c| std::str::from_utf8(c).unwrap())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// Normalises user input: case, separators, and look-alike letters.
+pub fn parse_code(input: &str) -> Option<String> {
+    let mut out = String::new();
+    for ch in input.trim().chars() {
+        let c = match ch.to_ascii_uppercase() {
+            '-' | ' ' | '_' | '.' => continue,
+            'O' => '0',
+            'I' | 'L' => '1',
+            'U' => 'V',
+            c if CROCKFORD.contains(&(c as u8)) && c.is_ascii() => c,
+            _ => return None,
+        };
+        out.push(c);
+    }
+    (out.len() == CODE_LEN).then_some(out)
+}
+
+/// Endpoint secret key for an invite code.
+pub fn code_key(code: &str) -> iroh::SecretKey {
+    let mut h = blake3::derive_key("bibicord 2026 invite code v1", code.as_bytes());
+    for _ in 0..KDF_ROUNDS {
+        h = *blake3::hash(&h).as_bytes();
+    }
+    iroh::SecretKey::from_bytes(&h)
+}
+
+/// Resolves an invite code to the address of the member who shared it.
 pub fn decode_ticket(ticket: &str) -> Result<EndpointAddr> {
-    let t = ticket.trim();
-    let body = t
-        .strip_prefix(TICKET_PREFIX)
-        .context("to nie jest zaproszenie BibiCord")?;
-    let bytes = data_encoding::BASE32_NOPAD
-        .decode(body.to_ascii_uppercase().as_bytes())
-        .context("uszkodzone zaproszenie")?;
-    Ok(postcard::from_bytes(&bytes).context("uszkodzone zaproszenie")?)
+    let code = parse_code(ticket)
+        .context("to nie jest kod zaproszenia BibiCord (12 znaków, np. K7QX-3MFA-9TZP)")?;
+    Ok(EndpointAddr::from(code_key(&code).public()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codes_roundtrip_and_normalise() {
+        let c = new_code();
+        assert_eq!(c.len(), 12);
+        let shown = format_code(&c);
+        assert_eq!(shown.len(), 14);
+        assert_eq!(parse_code(&shown.to_lowercase()).as_deref(), Some(c.as_str()));
+        assert_eq!(parse_code(" k7qx 3mfa-9tzo ").as_deref(), Some("K7QX3MFA9TZ0"));
+        assert!(parse_code("K7QX-3MFA").is_none());
+        let a = decode_ticket(&shown).unwrap();
+        assert_eq!(a.id, code_key(&c).public());
+    }
 }

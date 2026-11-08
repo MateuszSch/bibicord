@@ -581,13 +581,13 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "bibicord"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "bytes",
  "chrono",
  "cpal",
- "data-encoding",
  "directories",
  "eframe",
  "egui-pop-phosphor",

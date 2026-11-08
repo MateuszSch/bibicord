@@ -1,5 +1,17 @@
 //! Voice chat: microphone -> Opus (48 kHz mono, 20 ms) -> QUIC datagrams,
-//! and per-peer Opus decode + jitter buffer + mixing on playback.
+//! and per-peer adaptive jitter buffer + Opus decode (FEC, PLC) + mixing.
+//!
+//! Datagram payload: `[seq: u16 LE][flags: u8][opus]`. `seq` counts 20 ms
+//! frames and advances even when nothing is sent (silence, mute), so it
+//! doubles as a timestamp. `flags & 1` = the sender is speaking right now,
+//! `flags & 2` = last packet of a talk spurt (the sender goes quiet),
+//! `flags & 4` = pre-roll (recorded before the gate opened, sent in a burst).
+//!
+//! The receiver decodes on the audio thread, one frame at a time, in `seq`
+//! order: a missing frame is rebuilt from the next packet's in-band FEC or
+//! concealed by Opus PLC. The buffer depth adapts to network jitter (grows on
+//! late packets, shrinks after calm periods) and absorbs clock drift by
+//! dropping a frame when it gets too deep.
 
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
@@ -13,9 +25,31 @@ use tokio::sync::mpsc;
 
 const RATE: u32 = 48_000;
 const FRAME: usize = 960; // 20 ms
-const PREBUFFER_MS: usize = 40;
-const MAX_BUFFER_MS: usize = 200;
-const SPEAK_THRESHOLD: f32 = 0.015;
+
+/// Jitter buffer depth in frames (20 ms each).
+const MIN_DEPTH: u64 = 3;
+const START_DEPTH: u64 = 3;
+const MAX_DEPTH: u64 = 15;
+/// Played frames without a late packet before the depth shrinks by one.
+const CALM_FRAMES: u32 = 500;
+/// Two late packets closer than this (in played frames) grow the buffer;
+/// an isolated one is covered by FEC.
+const LATE_WINDOW: u32 = 150;
+/// Frames of PLC to bridge an underrun before pausing playback.
+const MAX_CONCEAL: u32 = 3;
+
+/// Voice activity: frame RMS above both the noise floor (+12 dB) and an
+/// absolute minimum (-56 dBFS). Sending continues for `HANGOVER` frames
+/// after the last voiced frame so word endings and pauses are not cut.
+const VAD_MIN: f32 = 0.0016;
+const VAD_OVER_FLOOR: f32 = 2.5;
+const HANGOVER: u32 = 50;
+/// Frames sent from before the gate opened (soft word onsets).
+const PREROLL: usize = 2;
+
+const FLAG_SPEAKING: u8 = 1;
+const FLAG_END: u8 = 2;
+const FLAG_PREROLL: u8 = 4;
 
 pub struct Voice {
     shared: Arc<Shared>,
@@ -30,13 +64,251 @@ struct Shared {
     me_speaking_until: Mutex<Instant>,
 }
 
+#[derive(PartialEq, Clone, Copy)]
+enum Play {
+    /// Nothing to play; waiting for packets.
+    Idle,
+    /// Collecting `depth` frames before starting.
+    Buffering,
+    Playing,
+}
+
 struct PeerAudio {
+    out_rate: u32,
     dec: opus::Decoder,
     resample: Linear,
-    queue: VecDeque<f32>,
-    playing: bool,
-    last_seq: Option<u16>,
+    /// Decoded samples at the output rate.
+    pcm: VecDeque<f32>,
+    /// Received packets by extended sequence number.
+    packets: std::collections::BTreeMap<u64, (u8, Vec<u8>)>,
+    highest: Option<u64>,
+    /// Next frame to play.
+    next: u64,
+    state: Play,
+    depth: u64,
+    concealed_run: u32,
+    /// The last played packet ended a talk spurt.
+    ended: bool,
+    calm: u32,
+    since_late: u32,
+    since_drop: u32,
     speaking_until: Instant,
+    stats: PeerStats,
+}
+
+/// Per-peer receive counters (for diagnostics).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PeerStats {
+    pub received: u64,
+    pub late: u64,
+    pub fec: u64,
+    pub concealed: u64,
+    pub dropped: u64,
+    pub underruns: u64,
+    pub depth_ms: u64,
+}
+
+impl PeerAudio {
+    fn new(out_rate: u32) -> Option<Self> {
+        Some(PeerAudio {
+            out_rate,
+            dec: opus::Decoder::new(RATE, opus::Channels::Mono).ok()?,
+            resample: Linear::new(RATE, out_rate),
+            pcm: VecDeque::new(),
+            packets: Default::default(),
+            highest: None,
+            next: 0,
+            state: Play::Idle,
+            depth: START_DEPTH,
+            concealed_run: 0,
+            ended: false,
+            calm: 0,
+            since_late: u32::MAX,
+            since_drop: 0,
+            speaking_until: Instant::now(),
+            stats: PeerStats { depth_ms: START_DEPTH * 20, ..Default::default() },
+        })
+    }
+
+    /// Frames between the play cursor and the newest packet.
+    fn buffered(&self) -> u64 {
+        match self.highest {
+            Some(h) if h >= self.next => h - self.next + 1,
+            _ => 0,
+        }
+    }
+
+    fn insert(&mut self, seq: u16, flags: u8, payload: &[u8]) {
+        // Extend the 16-bit counter relative to the newest packet seen.
+        let ext = match self.highest {
+            None => (1u64 << 32) + seq as u64,
+            Some(h) => {
+                let d = seq.wrapping_sub(h as u16) as i16 as i64;
+                (h as i64 + d) as u64
+            }
+        };
+        if let Some(h) = self.highest {
+            // Sender restarted (new voice session): start over.
+            if ext + 3000 < h {
+                if let Some(fresh) = PeerAudio::new(self.out_rate) {
+                    *self = PeerAudio { stats: self.stats, ..fresh };
+                    return self.insert(seq, flags, payload);
+                }
+            }
+        }
+        self.stats.received += 1;
+        if ext < self.next && self.state != Play::Idle {
+            // Arrived after its playout time: the buffer is too shallow.
+            self.stats.late += 1;
+            if self.since_late < LATE_WINDOW {
+                self.grow();
+            }
+            self.since_late = 0;
+            return;
+        }
+        self.highest = Some(self.highest.map_or(ext, |h| h.max(ext)));
+        self.packets.insert(ext, (flags, payload.to_vec()));
+        while self.packets.len() > 100 {
+            self.packets.pop_first();
+        }
+    }
+
+    fn grow(&mut self) {
+        self.depth = (self.depth + 1).min(MAX_DEPTH);
+        self.calm = 0;
+        self.stats.depth_ms = self.depth * 20;
+    }
+
+    fn decode(&mut self, data: &[u8], fec: bool) {
+        let mut pcm = [0f32; FRAME * 6];
+        let n = match self.dec.decode_float(data, &mut pcm, fec) {
+            Ok(n) => n.min(FRAME),
+            Err(_) => return,
+        };
+        // Clock drift: play 0.5 % faster when the buffer is deeper than
+        // the target, 0.5 % slower when shallower (inaudible).
+        let b = self.buffered();
+        let speed = if b > self.depth + 1 {
+            1.005
+        } else if b + 1 < self.depth {
+            0.995
+        } else {
+            1.0
+        };
+        self.resample.set_speed(speed);
+        let mut tmp = Vec::with_capacity(n * 2);
+        self.resample.process(&pcm[..n], &mut tmp);
+        self.pcm.extend(tmp);
+    }
+
+    /// Decodes the next frame into `pcm`. Returns false when there is
+    /// nothing left to play.
+    fn step(&mut self) -> bool {
+        loop {
+            match self.state {
+                Play::Idle | Play::Buffering => {
+                    let Some(&first) = self.packets.keys().next() else {
+                        self.state = Play::Idle;
+                        return false;
+                    };
+                    // New talk spurt, or the first frames are missing:
+                    // start at the oldest packet (silence is not concealed).
+                    if self.state == Play::Idle || first > self.next {
+                        self.next = first;
+                    }
+                    self.state = Play::Buffering;
+                    // Pre-roll frames arrive in one burst and do not prove the
+                    // link is ahead: count depth from the first real-time frame.
+                    let live = self
+                        .packets
+                        .iter()
+                        .find(|(_, (f, _))| f & FLAG_PREROLL == 0)
+                        .map(|(k, _)| *k);
+                    let ready = match (live, self.highest) {
+                        (Some(l), Some(h)) => h + 1 >= l + self.depth,
+                        _ => false,
+                    };
+                    if !ready {
+                        return false;
+                    }
+                    self.state = Play::Playing;
+                    self.concealed_run = 0;
+                }
+                Play::Playing => break,
+            }
+        }
+
+        // Far too deep (burst after a stall): drop a frame.
+        self.since_drop += 1;
+        if self.buffered() > self.depth + 5 && self.since_drop >= 5 {
+            if let Some((_, data)) = self.packets.remove(&self.next) {
+                let mut pcm = [0f32; FRAME * 6];
+                let _ = self.dec.decode_float(&data, &mut pcm, false);
+            }
+            self.next += 1;
+            self.since_drop = 0;
+            self.stats.dropped += 1;
+        }
+
+        if self.ended && !self.packets.contains_key(&self.next) {
+            // Talk spurt finished normally: no concealment, no penalty.
+            self.ended = false;
+            self.state = if self.packets.is_empty() { Play::Idle } else { Play::Buffering };
+            return false;
+        }
+        if let Some((flags, data)) = self.packets.remove(&self.next) {
+            self.decode(&data, false);
+            if flags & FLAG_SPEAKING != 0 {
+                self.speaking_until = Instant::now() + Duration::from_millis(250);
+            }
+            self.ended = flags & FLAG_END != 0;
+            self.concealed_run = 0;
+        } else if self.highest.is_some_and(|h| h > self.next) {
+            // Lost: rebuild from the next packet's FEC, else conceal.
+            if let Some((_, data)) = self.packets.get(&(self.next + 1)).cloned() {
+                self.decode(&data, true);
+                self.stats.fec += 1;
+            } else {
+                self.decode(&[], false);
+                self.stats.concealed += 1;
+            }
+        } else {
+            // Underrun: nothing newer has arrived.
+            if self.concealed_run >= MAX_CONCEAL {
+                self.state = Play::Buffering;
+                self.stats.underruns += 1;
+                self.grow();
+                return false;
+            }
+            self.concealed_run += 1;
+            self.decode(&[], false);
+            self.stats.concealed += 1;
+        }
+        self.next += 1;
+        self.calm += 1;
+        self.since_late = self.since_late.saturating_add(1);
+        if self.calm >= CALM_FRAMES && self.depth > MIN_DEPTH {
+            self.depth -= 1;
+            self.calm = 0;
+            self.stats.depth_ms = self.depth * 20;
+        }
+        true
+    }
+
+    /// Adds this peer's audio into `out`.
+    fn mix_into(&mut self, out: &mut [f32]) {
+        while self.pcm.len() < out.len() {
+            if !self.step() {
+                break;
+            }
+        }
+        for o in out.iter_mut() {
+            match self.pcm.pop_front() {
+                Some(s) => *o += s,
+                None => break,
+            }
+        }
+    }
 }
 
 impl Drop for Voice {
@@ -102,6 +374,11 @@ impl Voice {
         self.shared.deafened.store(d, Ordering::Relaxed);
     }
 
+    /// Receive counters per peer.
+    pub fn stats(&self) -> Vec<(EndpointId, PeerStats)> {
+        self.shared.peers.lock().unwrap().iter().map(|(id, p)| (*id, p.stats)).collect()
+    }
+
     pub fn me_speaking(&self) -> bool {
         *self.shared.me_speaking_until.lock().unwrap() > Instant::now()
     }
@@ -124,55 +401,20 @@ impl Voice {
 
     /// Handles one received voice datagram (without the type byte).
     pub fn receive(&self, from: EndpointId, data: &[u8]) {
-        if data.len() < 3 {
+        if data.len() < 4 {
             return;
         }
         let seq = u16::from_le_bytes([data[0], data[1]]);
-        let payload = &data[2..];
         let out_rate = *self.shared.out_rate.lock().unwrap();
         let mut peers = self.shared.peers.lock().unwrap();
         let p = match peers.entry(from) {
             std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
-            std::collections::hash_map::Entry::Vacant(e) => {
-                let Ok(dec) = opus::Decoder::new(RATE, opus::Channels::Mono) else { return };
-                e.insert(PeerAudio {
-                    dec,
-                    resample: Linear::new(RATE, out_rate),
-                    queue: VecDeque::new(),
-                    playing: false,
-                    last_seq: None,
-                    speaking_until: Instant::now(),
-                })
-            }
+            std::collections::hash_map::Entry::Vacant(e) => match PeerAudio::new(out_rate) {
+                Some(p) => e.insert(p),
+                None => return,
+            },
         };
-        let mut pcm = [0f32; FRAME * 6];
-        if let Some(last) = p.last_seq {
-            let gap = seq.wrapping_sub(last);
-            if gap == 0 || gap > 0x8000 {
-                return; // duplicate or reordered-late packet
-            }
-            // Conceal up to 3 lost frames.
-            for _ in 1..gap.min(4) {
-                if let Ok(n) = p.dec.decode_float(&[], &mut pcm, false) {
-                    let mut tmp = Vec::new();
-                    p.resample.process(&pcm[..n], &mut tmp);
-                    p.queue.extend(tmp);
-                }
-            }
-        }
-        p.last_seq = Some(seq);
-        let Ok(n) = p.dec.decode_float(payload, &mut pcm, false) else { return };
-        if rms(&pcm[..n]) > SPEAK_THRESHOLD {
-            p.speaking_until = Instant::now() + Duration::from_millis(300);
-        }
-        let mut tmp = Vec::with_capacity(n * 2);
-        p.resample.process(&pcm[..n], &mut tmp);
-        p.queue.extend(tmp);
-        let max = out_rate as usize * MAX_BUFFER_MS / 1000;
-        if p.queue.len() > max {
-            let drop = p.queue.len() - max / 2;
-            p.queue.drain(..drop);
-        }
+        p.insert(seq, data[2], &data[3..]);
     }
 }
 
@@ -229,35 +471,62 @@ fn capture_pipeline(
 ) -> Result<impl FnMut(&[f32]) + Send + 'static> {
     let mut enc = opus::Encoder::new(RATE, opus::Channels::Mono, opus::Application::Voip)?;
     enc.set_bitrate(opus::Bitrate::Bits(48_000))?;
+    // In-band FEC: each packet also carries a low-bitrate copy of the
+    // previous frame, which the receiver uses when a packet is lost.
     enc.set_inband_fec(true)?;
+    enc.set_packet_loss_perc(10)?;
     let mut resample = Linear::new(in_rate, RATE);
     let mut pending: Vec<f32> = Vec::with_capacity(FRAME * 4);
     let mut seq: u16 = 0;
-    let mut silent_frames = 0u32;
+    let mut floor = VAD_MIN;
+    let mut hang = 0u32;
+    // Encoded but unsent frames, replayed when the gate opens.
+    let mut preroll: VecDeque<Bytes> = VecDeque::with_capacity(PREROLL + 1);
     Ok(move |mono: &[f32]| {
         resample.process(mono, &mut pending);
         while pending.len() >= FRAME {
             let frame: Vec<f32> = pending.drain(..FRAME).collect();
-            if shared.muted.load(Ordering::Relaxed) {
-                continue;
-            }
-            // Simple gate: keep sending 300 ms after speech, then go silent.
-            if rms(&frame) > SPEAK_THRESHOLD {
-                silent_frames = 0;
-                *shared.me_speaking_until.lock().unwrap() =
-                    Instant::now() + Duration::from_millis(300);
-            } else {
-                silent_frames += 1;
-            }
-            if silent_frames > 15 {
-                continue;
-            }
-            let mut out = [0u8; 1500];
-            out[0..2].copy_from_slice(&seq.to_le_bytes());
-            if let Ok(n) = enc.encode_float(&frame, &mut out[2..]) {
-                let _ = packets.send(Bytes::copy_from_slice(&out[..n + 2]));
-            }
+            let this = seq;
             seq = seq.wrapping_add(1);
+            // Noise floor: follows quiet frames down immediately, creeps up
+            // ~1 dB/s so steady background noise does not count as speech.
+            let level = rms(&frame);
+            floor = if level < floor { level.max(1e-5) } else { floor * 1.0023 };
+            let voiced = level > VAD_MIN && level > floor * VAD_OVER_FLOOR;
+            if shared.muted.load(Ordering::Relaxed) {
+                hang = 0;
+                preroll.clear();
+                continue;
+            }
+            let was_open = hang > 0;
+            if voiced {
+                hang = HANGOVER;
+                *shared.me_speaking_until.lock().unwrap() = Instant::now() + Duration::from_millis(250);
+            } else if hang > 0 {
+                hang -= 1;
+            }
+            // Always encode, so the encoder state (and FEC) stays continuous.
+            let mut out = [0u8; 1500];
+            out[0..2].copy_from_slice(&this.to_le_bytes());
+            out[2] = if voiced { FLAG_SPEAKING } else { 0 };
+            if hang == 0 && was_open {
+                out[2] |= FLAG_END;
+            }
+            let Ok(n) = enc.encode_float(&frame, &mut out[3..]) else { continue };
+            let pkt = Bytes::copy_from_slice(&out[..n + 3]);
+            if hang == 0 && !was_open {
+                preroll.push_back(pkt);
+                if preroll.len() > PREROLL {
+                    preroll.pop_front();
+                }
+                continue;
+            }
+            for p in preroll.drain(..) {
+                let mut p = p.to_vec();
+                p[2] |= FLAG_PREROLL;
+                let _ = packets.send(Bytes::from(p));
+            }
+            let _ = packets.send(pkt);
         }
     })
 }
@@ -265,30 +534,15 @@ fn capture_pipeline(
 /// Playback side: mixes all peers into `frames` mono samples.
 fn mixer(shared: Arc<Shared>, out_rate: u32) -> impl FnMut(usize) -> Vec<f32> + Send + 'static {
     *shared.out_rate.lock().unwrap() = out_rate;
-    let prebuffer = out_rate as usize * PREBUFFER_MS / 1000;
     move |frames: usize| -> Vec<f32> {
         let mut out = vec![0f32; frames];
-        let deaf = shared.deafened.load(Ordering::Relaxed);
-        let mut peers = shared.peers.lock().unwrap();
-        for p in peers.values_mut() {
-            if !p.playing {
-                if p.queue.len() >= prebuffer {
-                    p.playing = true;
-                } else {
-                    continue;
-                }
-            }
-            for o in out.iter_mut() {
-                match p.queue.pop_front() {
-                    Some(s) => *o += s,
-                    None => {
-                        p.playing = false;
-                        break;
-                    }
-                }
+        {
+            let mut peers = shared.peers.lock().unwrap();
+            for p in peers.values_mut() {
+                p.mix_into(&mut out);
             }
         }
-        if deaf {
+        if shared.deafened.load(Ordering::Relaxed) {
             out.iter_mut().for_each(|s| *s = 0.0);
         }
         out.iter_mut().for_each(|s| *s = s.clamp(-1.0, 1.0));
@@ -413,6 +667,7 @@ fn downmix<T: Copy>(d: &[T], ch: usize, conv: impl Fn(T) -> f32) -> Vec<f32> {
 
 /// Streaming linear resampler.
 struct Linear {
+    base: f64,
     step: f64,
     t: f64,
     prev: f32,
@@ -420,15 +675,22 @@ struct Linear {
 
 impl Linear {
     fn new(from: u32, to: u32) -> Self {
-        Linear { step: from as f64 / to as f64, t: 0.0, prev: 0.0 }
+        let step = from as f64 / to as f64;
+        Linear { base: step, step, t: 0.0, prev: 0.0 }
+    }
+
+    /// Playback speed factor (1.0 = nominal).
+    fn set_speed(&mut self, speed: f64) {
+        self.step = self.base * speed;
     }
 
     fn process(&mut self, input: &[f32], out: &mut Vec<f32>) {
         if input.is_empty() {
             return;
         }
-        if self.step == 1.0 {
+        if self.step == 1.0 && self.t == 0.0 {
             out.extend_from_slice(input);
+            self.prev = input[input.len() - 1];
             return;
         }
         // Sample positions: -1 is `prev`, 0.. are `input`.
@@ -444,6 +706,208 @@ impl Linear {
         }
         self.t -= input.len() as f64;
         self.prev = input[input.len() - 1];
+    }
+}
+
+/// Network simulator: the real Opus encoder/decoder and jitter buffer with a
+/// synthetic link between them. Measures dropouts the listener would hear.
+#[cfg(test)]
+pub(crate) mod sim {
+    use super::*;
+
+    pub struct Net {
+        pub name: &'static str,
+        pub base_ms: f64,
+        /// Mean of exponential per-packet jitter.
+        pub jitter_ms: f64,
+        pub loss: f64,
+        /// Every `stall_every_s` the link freezes for `stall_ms` (Wi-Fi scan,
+        /// power save, relay TCP retransmit), then delivers everything at once.
+        pub stall_every_s: f64,
+        pub stall_ms: f64,
+        /// Sender clock relative to receiver (0.002 = 0.2 % faster).
+        pub drift: f64,
+        /// Peak speech level (linear, 1.0 = 0 dBFS).
+        pub amp: f32,
+        /// Background noise RMS.
+        pub noise: f32,
+        /// Talk 2 s, pause 1.5 s (instead of talking continuously).
+        pub pauses: bool,
+    }
+
+    #[derive(Debug, Default)]
+    pub struct Report {
+        pub sent_pct: f64,
+        pub dropouts: u32,
+        pub silent_ms: u32,
+        pub stats: PeerStats,
+    }
+
+    struct Rng(u64);
+    impl Rng {
+        fn f(&mut self) -> f64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 >> 11) as f64 / (1u64 << 53) as f64
+        }
+    }
+
+    pub fn run(net: &Net, secs: f64) -> Report {
+        let shared = |_| {
+            Arc::new(Shared {
+                muted: AtomicBool::new(false),
+                deafened: AtomicBool::new(false),
+                out_rate: Mutex::new(RATE),
+                peers: Mutex::new(HashMap::new()),
+                me_speaking_until: Mutex::new(Instant::now()),
+            })
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut capture = capture_pipeline(shared(0), tx, RATE).unwrap();
+        let rx_voice = Voice { shared: shared(1), stop: Arc::new(AtomicBool::new(false)) };
+        let mut mix = mixer(rx_voice.shared.clone(), RATE);
+        let from = iroh::SecretKey::from_bytes(&[7; 32]).public();
+        let mut rng = Rng(0x9e3779b97f4a7c15);
+
+        // Sender: one 20 ms frame per (20 ms * (1 - drift)) of receiver time.
+        // Speech model: 220 Hz voice, ~4 syllables/s, phrase loudness varying
+        // by up to -14 dB every 400 ms (continuous talking, no long pauses).
+        let frames = (secs * 50.0) as usize;
+        let mut arrivals: Vec<(f64, Bytes)> = Vec::new();
+        let mut sent = 0;
+        let mut phrase = 1.0f32;
+        let talking = |k: usize| !net.pauses || (k * 20) % 3500 < 2000;
+        let mut noise_rng = Rng(0x2545f4914f6cdd1d);
+        for k in 0..frames {
+            let t = k as f64 * 20.0 * (1.0 - net.drift);
+            if k % 20 == 0 {
+                phrase = 0.2 + 0.8 * rng.f() as f32;
+            }
+            let on = if talking(k) { 1.0 } else { 0.0 };
+            let frame: Vec<f32> = (0..FRAME)
+                .map(|i| {
+                    let x = (k * FRAME + i) as f32 / RATE as f32;
+                    let syllable = 0.15 + 0.85 * (x * std::f32::consts::PI * 4.0).sin().abs();
+                    let n = net.noise * 1.73 * (2.0 * noise_rng.f() as f32 - 1.0);
+                    on * net.amp * phrase * syllable * (x * 2.0 * std::f32::consts::PI * 220.0).sin() + n
+                })
+                .collect();
+            capture(&frame);
+            while let Ok(pkt) = rx.try_recv() {
+                sent += 1;
+                if rng.f() < net.loss {
+                    continue;
+                }
+                let mut at = t + net.base_ms - net.jitter_ms * rng.f().max(1e-9).ln();
+                if net.stall_every_s > 0.0 {
+                    let period = net.stall_every_s * 1000.0;
+                    let phase = at % period;
+                    if phase < net.stall_ms {
+                        at += net.stall_ms - phase;
+                    }
+                }
+                arrivals.push((at, pkt));
+            }
+        }
+        arrivals.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+        // Receiver: audio callback every 10 ms.
+        let mut rep = Report { sent_pct: 100.0 * sent as f64 / frames as f64, ..Default::default() };
+        let mut next = 0;
+        let mut in_gap = false;
+        let end = frames as f64 * 20.0;
+        let mut t = 0.0;
+        while t < end {
+            while next < arrivals.len() && arrivals[next].0 <= t {
+                rx_voice.receive(from, &arrivals[next].1);
+                next += 1;
+            }
+            let out = mix(480);
+            // Audio is expected if the sender talked during [t-400, t-30] ms
+            // (covers any buffer depth up to 370 ms).
+            let k_at = |ms: f64| (ms / (20.0 * (1.0 - net.drift))) as usize;
+            let expected = (k_at(t - 400.0)..=k_at(t - 30.0)).all(|k| talking(k));
+            // Skip start-up and the last 0.5 s (a faster sender finishes early).
+            if t > 1000.0 && t < end - 500.0 && expected {
+                // Dropout: >= 2 ms of digital silence inside this callback.
+                let mut run = 0;
+                let mut max = 0;
+                for s in &out {
+                    run = if *s == 0.0 { run + 1 } else { 0 };
+                    max = max.max(run);
+                }
+                let silent = max >= 96;
+                if silent {
+                    rep.silent_ms += 10;
+                    if !in_gap {
+                        rep.dropouts += 1;
+                    }
+                }
+                in_gap = silent;
+            }
+            t += 10.0;
+        }
+        if let Some((_, st)) = rx_voice.stats().into_iter().next() {
+            rep.stats = st;
+        }
+        rep
+    }
+
+    pub fn scenarios() -> Vec<Net> {
+        let n = |name, base_ms, jitter_ms, loss, stall_every_s, stall_ms, drift, amp| Net {
+            name, base_ms, jitter_ms, loss, stall_every_s, stall_ms, drift, amp,
+            noise: 0.0003, pauses: false,
+        };
+        let talk = |name, amp, noise| Net { pauses: true, noise, ..n(name, 25.0, 8.0, 0.01, 0.0, 0.0, 0.0, amp) };
+        vec![
+            n("idealna sieć", 20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.3),
+            n("LAN", 2.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.3),
+            n("Wi-Fi: jitter 10 ms", 25.0, 10.0, 0.0, 0.0, 0.0, 0.0, 0.3),
+            n("Wi-Fi: jitter 10 ms + 1% utraty", 25.0, 10.0, 0.01, 0.0, 0.0, 0.0, 0.3),
+            n("Wi-Fi: przycięcia 120 ms co 3 s", 25.0, 5.0, 0.0, 3.0, 120.0, 0.0, 0.3),
+            n("relay: jitter 25 ms", 45.0, 25.0, 0.0, 0.0, 0.0, 0.0, 0.3),
+            n("internet: 3% utraty", 30.0, 5.0, 0.03, 0.0, 0.0, 0.0, 0.3),
+            n("zegar nadawcy +0,3%", 20.0, 2.0, 0.0, 0.0, 0.0, 0.003, 0.3),
+            n("zegar nadawcy -0,3%", 20.0, 2.0, 0.0, 0.0, 0.0, -0.003, 0.3),
+            n("mikrofon: szczyty -20 dBFS", 20.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.1),
+            n("mikrofon: szczyty -26 dBFS", 20.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.05),
+            n("mikrofon: szczyty -32 dBFS", 20.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.025),
+            talk("rozmowa z pauzami, cicho w tle", 0.1, 0.0003),
+            talk("rozmowa z pauzami, wentylator -45 dB", 0.1, 0.0056),
+            talk("rozmowa z pauzami, cichy mikrofon", 0.025, 0.0003),
+        ]
+    }
+
+    /// Every scenario must be free of audible gaps.
+    #[test]
+    fn no_dropouts() {
+        for net in scenarios() {
+            let r = run(&net, 30.0);
+            assert_eq!(r.dropouts, 0, "{}: {:?}", net.name, r);
+            if !net.pauses {
+                assert!(r.sent_pct > 99.0, "{}: {:?}", net.name, r);
+            }
+        }
+    }
+
+    #[test]
+    fn report() {
+        println!(
+            "{:<36} {:>8} {:>8} {:>10} {:>5} {:>5} {:>7} {:>9}",
+            "scenariusz (60 s mowy)", "wysłane", "przerwy", "cisza[ms]", "FEC", "PLC", "pominięte", "bufor[ms]"
+        );
+        for net in scenarios() {
+            let r = run(&net, 60.0);
+            let st = r.stats;
+            println!(
+                "{:<36} {:>7.0}% {:>8} {:>10} {:>5} {:>5} {:>7} {:>9}",
+                net.name, r.sent_pct, r.dropouts, r.silent_ms, st.fec, st.concealed, st.dropped, st.depth_ms
+            );
+            if std::env::var_os("SIM_DEBUG").is_some() {
+                println!("    {st:?}");
+            }
+        }
     }
 }
 

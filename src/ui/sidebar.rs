@@ -256,7 +256,24 @@ impl App {
             fg,
             right - rect.left() - 72.0,
         );
-        let resp = if clicked_live { resp.on_hover_text("Obejrzyj stream") } else { resp };
+        let mut tip = String::new();
+        if let Some(id) = m.id {
+            let st = self.node.voice().and_then(|v| v.stats().into_iter().find(|(p, _)| *p == id));
+            if let Some((_, st)) = st {
+                tip = format!(
+                    "Bufor: {} ms · odebrane: {}\nOdtworzone z FEC: {} · zamaskowane: {} · spóźnione: {}",
+                    st.depth_ms, st.received, st.fec, st.concealed, st.late
+                );
+            }
+            if let Some(path) = self.node.path_kind(&id) {
+                let path = if path == "relay" { "przez serwer pośredniczący" } else { "bezpośrednie (P2P)" };
+                tip = if tip.is_empty() { format!("Połączenie: {path}") } else { format!("{tip}\nPołączenie: {path}") };
+            }
+        }
+        if clicked_live {
+            tip = if tip.is_empty() { "Obejrzyj stream".into() } else { format!("Obejrzyj stream\n\n{tip}") };
+        }
+        let resp = if tip.is_empty() { resp } else { resp.on_hover_text(tip) };
         (resp.clicked() && clicked_live).then(|| m.id).flatten()
     }
 
