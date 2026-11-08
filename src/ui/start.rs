@@ -37,8 +37,13 @@ impl App {
         // Mark + heading
         ui.horizontal(|ui| {
             let (rect, _) = ui.allocate_exact_size(Vec2::splat(44.0), Sense::hover());
-            ui.painter().rect_filled(rect, r::CARD, c::BRAND);
-            w::paint_icon(ui, rect.center(), ic::WAVEFORM, 26.0, c::WHITE, true);
+            let logo = logo_texture(ui.ctx());
+            ui.painter().image(
+                logo.id(),
+                rect,
+                egui::Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                c::WHITE,
+            );
             ui.add_space(sp::XS);
             ui.vertical(|ui| {
                 ui.add_space(1.0);
@@ -159,4 +164,16 @@ impl App {
         });
         let _ = (Align2::LEFT_TOP, Pos2::ZERO, W::Regular);
     }
+}
+
+/// App icon (the same PNG as the window icon), decoded on first use.
+fn logo_texture(ctx: &egui::Context) -> &'static egui::TextureHandle {
+    static LOGO: std::sync::OnceLock<egui::TextureHandle> = std::sync::OnceLock::new();
+    LOGO.get_or_init(|| {
+        let png = include_bytes!("../../packaging/icon/icon-256.png");
+        let img = image::load_from_memory(png).expect("icon-256.png").to_rgba8();
+        let size = [img.width() as usize, img.height() as usize];
+        let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+        ctx.load_texture("bibicord_logo", color, egui::TextureOptions::LINEAR)
+    })
 }
