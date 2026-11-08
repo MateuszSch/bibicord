@@ -100,6 +100,7 @@ pub struct App {
     pub(crate) status: String,
     pub(crate) error: Option<(String, Instant)>,
     pub(crate) update: crate::update::Shared,
+    pub(crate) sounds: crate::sounds::Player,
     update_checked: Option<Instant>,
     demo: Option<crate::demo::Demo>,
 }
@@ -172,6 +173,7 @@ impl App {
             status: String::new(),
             error: None,
             update: Default::default(),
+            sounds: crate::sounds::Player::new(),
             update_checked: None,
             demo: crate::demo::Demo::from_env(),
         }
@@ -195,11 +197,17 @@ impl App {
         });
     }
 
+    /// Plays a UI sound on the selected output device.
+    pub(crate) fn cue(&self, cue: crate::sounds::Cue) {
+        self.sounds.play(cue, self.node.devices().output);
+    }
+
     fn chat_visible(&self) -> bool {
         self.view == View::Chat || self.stage_chat
     }
 
     fn handle_events(&mut self, ctx: &egui::Context) {
+        use crate::sounds::Cue;
         use widgets::ic;
         while let Ok(ev) = self.events.try_recv() {
             match ev {
@@ -230,6 +238,9 @@ impl App {
                 }
                 Event::PeerLeft { id } => {
                     if let Some(p) = self.peer(&id) {
+                        if p.voice && self.my_voice {
+                            self.cue(Cue::PeerLeave);
+                        }
                         let n = p.name.clone();
                         self.system(ic::ARROW_LEFT, n, "opuszcza pokój.", false);
                     }
@@ -237,19 +248,30 @@ impl App {
                 }
                 Event::PeerStream { id, info } => {
                     let mut started = None;
+                    let mut stopped = false;
                     if let Some(p) = self.peers.iter_mut().find(|p| p.id == id) {
                         if p.stream.is_none() && info.is_some() {
                             started = Some(p.name.clone());
                         }
+                        stopped = p.stream.is_some() && info.is_none();
                         p.stream = info;
                     }
                     if let Some(n) = started {
+                        self.cue(Cue::StreamStart);
                         self.system(ic::BROADCAST, n, "udostępnia ekran.", true);
+                    }
+                    if stopped {
+                        self.cue(Cue::StreamStop);
                     }
                 }
                 Event::PeerVoice { id, on } => {
+                    let mut changed = false;
                     if let Some(p) = self.peers.iter_mut().find(|p| p.id == id) {
+                        changed = p.voice != on;
                         p.voice = on;
+                    }
+                    if changed && self.my_voice {
+                        self.cue(if on { Cue::PeerJoin } else { Cue::PeerLeave });
                     }
                 }
                 Event::PeerMute { id, muted, deafened } => {
@@ -261,6 +283,9 @@ impl App {
                     if from.is_some() && !self.chat_visible() {
                         self.unread += 1;
                     }
+                    if from.is_some() && (!self.chat_visible() || !ctx.input(|i| i.focused)) {
+                        self.cue(Cue::Message);
+                    }
                     self.chat.push(ChatItem {
                         kind: ChatKind::Message { from, name, text },
                         time: chrono::Local::now(),
@@ -268,10 +293,17 @@ impl App {
                 }
                 Event::MyStream(info) => {
                     self.stream_starting = false;
+                    if self.my_stream.is_some() != info.is_some() {
+                        self.cue(if info.is_some() { Cue::StreamStart } else { Cue::StreamStop });
+                    }
                     self.my_stream = info;
                 }
                 Event::MyVoice(on) => {
                     self.voice_starting = false;
+                    // Device changes reconnect without a "false" in between.
+                    if self.my_voice != on {
+                        self.cue(if on { Cue::Connect } else { Cue::Disconnect });
+                    }
                     self.my_voice = on;
                 }
                 Event::Watching(w) => {
@@ -301,6 +333,9 @@ impl App {
     }
 
     pub(crate) fn leave_room(&mut self, ctx: &egui::Context) {
+        if self.my_voice {
+            self.cue(crate::sounds::Cue::Disconnect);
+        }
         self.node.leave();
         self.screen = Screen::Start;
         self.peers.clear();
@@ -329,6 +364,13 @@ impl App {
     }
 
     pub(crate) fn set_mute(&mut self, mute: MuteState) {
+        use crate::sounds::Cue;
+        let old = self.mute;
+        if mute.deafened != old.deafened {
+            self.cue(if mute.deafened { Cue::Deafen } else { Cue::Undeafen });
+        } else if mute.muted != old.muted {
+            self.cue(if mute.muted { Cue::Mute } else { Cue::Unmute });
+        }
         self.mute = mute;
         self.node.set_mute(mute);
     }

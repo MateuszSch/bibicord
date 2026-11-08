@@ -58,6 +58,10 @@ lewej, czat albo scena głosowa w środku, panel połączenia i własny profil
   zbierać opóźnienie.
 - **Głos.** Opus 48 kHz z FEC, wysyłany w datagramach QUIC (bez retransmisji),
   z buforem jitter i miksowaniem.
+- **Dźwięki.** Krótkie sygnały przy wejściu i wyjściu z rozmowy (Twoim
+  i znajomych), wyciszeniu mikrofonu i słuchawek, starcie i końcu streamu oraz
+  nowej wiadomości. Są syntezowane w kodzie (`src/sounds.rs`), nie pochodzą
+  z Discorda. Głośność i wyłączanie: „Ustawienia głosu”.
 
 > Bez serwera każdy widz pobiera pełny bitrate od nadawcy. Przy 30 Mb/s
 > i 3 widzach nadawca potrzebuje około 90 Mb/s wysyłania.
@@ -134,6 +138,9 @@ cargo test -- --ignored          # end-to-end: 3 węzły przez prawdziwą sieć,
 Zmienne pomocnicze: `BIBICORD_TEST_SOURCE=1` streamuje obraz testowy zamiast
 ekranu, `BIBICORD_DEBUG=1` włącza szczegółowe logi, `BIBICORD_FAKE_AUDIO=1` uruchamia
 głos bez urządzeń audio (`BIBICORD_FAKE_TONE=1` dodaje sygnał testowy).
+`BIBICORD_NO_SOUNDS=1` wyłącza dźwięki. `cargo test play_all -- --ignored` odtwarza
+wszystkie dźwięki, a `BIBICORD_SOUNDS_OUT=<katalog> cargo test export_wavs -- --ignored`
+zapisuje je jako WAV.
 Skryptowane uruchomienia do zrzutów ekranu opisuje nagłówek `src/demo.rs`.
 
 ## Struktura
@@ -146,6 +153,7 @@ Skryptowane uruchomienia do zrzutów ekranu opisuje nagłówek `src/demo.rs`.
 | `src/video/hub.rs` | rozsyłanie strumienia do widzów (klatki kluczowe, wolni widzowie) |
 | `src/video/decode.rs` | dekodowanie sprzętowe do RGBA |
 | `src/voice.rs` | mikrofon/głośniki, Opus, bufor jitter, wykrywanie mówienia |
+| `src/sounds.rs` | dźwięki interfejsu (synteza, odtwarzanie, ustawienia) |
 | `src/ui/theme.rs` | tokeny design systemu i instalacja fontów |
 | `src/ui/widgets.rs` | komponenty |
 | `src/ui/{start,sidebar,chat,stage,dialogs}.rs` | ekrany i okna |

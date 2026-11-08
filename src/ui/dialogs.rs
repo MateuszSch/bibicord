@@ -344,6 +344,10 @@ impl App {
             ui.add_space(sp::L);
             w::separator(ui, c::BORDER);
             ui.add_space(sp::M);
+            self.sounds_ui(ui, dev.output.clone());
+            ui.add_space(sp::L);
+            w::separator(ui, c::BORDER);
+            ui.add_space(sp::M);
             w::field_label(ui, "Twój profil");
             ui.horizontal(|ui| {
                 w::Avatar { name: &self.name, color: self.my_color(), radius: 18.0, speaking: 0.0, status: None }.show(ui);
@@ -365,6 +369,47 @@ impl App {
                 self.dialog = None;
             }
         });
+    }
+
+    /// Sound cues: on/off, volume and a preview.
+    fn sounds_ui(&mut self, ui: &mut Ui, output: Option<String>) {
+        use crate::sounds::Cue;
+        let before = self.sounds.prefs;
+        let p = &mut self.sounds.prefs;
+        let value = if p.enabled { format!("{} %", p.volume) } else { "Wyłączone".into() };
+        w::field_label_value(ui, "Dźwięki powiadomień", &value);
+        ui.horizontal(|ui| {
+            if w::chip(ui, "Włączone", p.enabled).clicked() {
+                p.enabled = true;
+            }
+            if w::chip(ui, "Wyłączone", !p.enabled).clicked() {
+                p.enabled = false;
+            }
+        });
+        ui.add_space(sp::S);
+        let mut released = false;
+        ui.add_enabled_ui(p.enabled, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().slider_width = ui.available_width() - 110.0;
+                let r = ui.add(egui::Slider::new(&mut p.volume, 0..=100).show_value(false));
+                released = r.drag_stopped() || (r.changed() && !r.dragged());
+                ui.add_space(sp::S);
+                if Button::new("Odtwórz", Kind::Secondary).icon(ic::PLAY).show(ui).clicked() {
+                    released = true;
+                }
+            });
+        });
+        ui.label(w::text(
+            "Dołączanie, wychodzenie, wyciszenie, streamy i nowe wiadomości.",
+            ty::SMALL,
+            c::TEXT_MUTED,
+        ));
+        if self.sounds.prefs != before {
+            self.sounds.prefs.save();
+        }
+        if released {
+            self.sounds.play(Cue::PeerJoin, output);
+        }
     }
 
     fn invite_ui(&mut self, ui: &mut Ui) {
