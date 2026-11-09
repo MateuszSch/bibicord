@@ -141,7 +141,7 @@ impl App {
             ui.painter().rect_stroke(
                 rect,
                 r::CARD,
-                Stroke::new(2.0, theme::alpha(c::SUCCESS, speak)),
+                Stroke::new(2.0, theme::alpha(c::SPEAKING, speak)),
                 StrokeKind::Inside,
             );
         }

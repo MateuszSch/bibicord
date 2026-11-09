@@ -15,33 +15,37 @@ pub mod c {
         Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)
     }
     // Surfaces, darkest to lightest.
-    pub const BG_STAGE: Color32 = hex(0x0b0c0e);
-    pub const BG_BASE: Color32 = hex(0x111214);
-    pub const BG_SIDEBAR: Color32 = hex(0x16171a);
-    pub const BG_CONTENT: Color32 = hex(0x1c1d21);
-    pub const BG_HOVER_SOFT: Color32 = hex(0x202125);
-    pub const BG_RAISED: Color32 = hex(0x232428);
-    pub const BG_SELECTED: Color32 = hex(0x2b2d32);
-    pub const BG_PRESSED: Color32 = hex(0x34363c);
-    pub const BORDER: Color32 = hex(0x2b2d32);
-    pub const BORDER_STRONG: Color32 = hex(0x3a3c42);
+    pub const BG_STAGE: Color32 = hex(0x0a0c0f);
+    pub const BG_BASE: Color32 = hex(0x101216);
+    pub const BG_SIDEBAR: Color32 = hex(0x15181d);
+    pub const BG_CONTENT: Color32 = hex(0x1b1e24);
+    pub const BG_HOVER_SOFT: Color32 = hex(0x1f2228);
+    pub const BG_RAISED: Color32 = hex(0x22262c);
+    pub const BG_SELECTED: Color32 = hex(0x2a2e36);
+    pub const BG_PRESSED: Color32 = hex(0x333842);
+    pub const BORDER: Color32 = hex(0x2a2e36);
+    pub const BORDER_STRONG: Color32 = hex(0x3b404a);
     // Text.
-    pub const TEXT: Color32 = hex(0xf2f3f5);
-    pub const TEXT_BODY: Color32 = hex(0xdbdee1);
-    pub const TEXT_SECONDARY: Color32 = hex(0xb5bac1);
-    pub const TEXT_MUTED: Color32 = hex(0x949ba4);
+    pub const TEXT: Color32 = hex(0xeef1f5);
+    pub const TEXT_BODY: Color32 = hex(0xd5dae1);
+    pub const TEXT_SECONDARY: Color32 = hex(0xaeb5bf);
+    pub const TEXT_MUTED: Color32 = hex(0x99a1ad);
     // Intent.
-    pub const BRAND: Color32 = hex(0x5b6cff);
-    pub const BRAND_HOVER: Color32 = hex(0x4c5cf0);
+    pub const BRAND: Color32 = hex(0x5cff3a);
+    pub const BRAND_HOVER: Color32 = hex(0x4ae62c);
+    /// Text and icons placed on a solid `BRAND` fill (white is unreadable on neon green).
+    pub const ON_BRAND: Color32 = hex(0x0a0c0f);
     pub const SUCCESS: Color32 = hex(0x2dc770);
+    /// Voice activity: avatar ring and stage tile frame.
+    pub const SPEAKING: Color32 = hex(0x2ee6ff);
     pub const DANGER: Color32 = hex(0xed4b55);
     pub const DANGER_HOVER: Color32 = hex(0xd83c46);
-    pub const WARNING: Color32 = hex(0xf0b232);
+    pub const WARNING: Color32 = hex(0xf2a93b);
     pub const WHITE: Color32 = Color32::WHITE;
 
     /// Avatar hues, picked deterministically per user.
     pub const AVATARS: [Color32; 8] = [
-        hex(0x5b6cff),
+        hex(0x238f98),
         hex(0xe0577a),
         hex(0x2fa37a),
         hex(0xe08a3c),

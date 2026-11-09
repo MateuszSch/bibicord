@@ -81,7 +81,7 @@ impl Avatar<'_> {
             p.circle_stroke(
                 center,
                 self.radius + 2.5,
-                Stroke::new(2.0, theme::alpha(c::SUCCESS, self.speaking)),
+                Stroke::new(2.0, theme::alpha(c::SPEAKING, self.speaking)),
             );
         }
         if let Some((dot, surface)) = self.status {
@@ -150,7 +150,7 @@ impl Kind {
     fn colors(self) -> (Color32, Color32, Color32) {
         // (fill, hover fill, text)
         match self {
-            Kind::Primary => (c::BRAND, c::BRAND_HOVER, c::WHITE),
+            Kind::Primary => (c::BRAND, c::BRAND_HOVER, c::ON_BRAND),
             Kind::Secondary => (c::BG_SELECTED, c::BG_PRESSED, c::TEXT),
             Kind::Danger => (c::DANGER, c::DANGER_HOVER, c::WHITE),
             Kind::Ghost => (Color32::TRANSPARENT, c::BG_SELECTED, c::TEXT_SECONDARY),
@@ -267,7 +267,7 @@ pub fn round_button(ui: &mut Ui, icon_code: &str, tooltip: &str, kind: RoundKind
     let (bg, hover, fg) = match kind {
         RoundKind::Normal => (c::BG_SELECTED, c::BG_PRESSED, c::TEXT),
         RoundKind::Off => (mix(c::BG_SELECTED, c::DANGER, 0.22), mix(c::BG_SELECTED, c::DANGER, 0.34), mix(c::DANGER, c::WHITE, 0.2)),
-        RoundKind::On => (c::BRAND, c::BRAND_HOVER, c::WHITE),
+        RoundKind::On => (c::BRAND, c::BRAND_HOVER, c::ON_BRAND),
         RoundKind::Hangup => (c::DANGER, c::DANGER_HOVER, c::WHITE),
     };
     ui.painter().circle_filled(rect.center(), size / 2.0, mix(bg, hover, t));
@@ -432,7 +432,7 @@ pub fn menu_item(ui: &mut Ui, label: &str, icon_code: &str, danger: bool) -> Res
     };
     let hover_bg = if danger { c::DANGER } else { c::BRAND };
     ui.painter().rect_filled(rect, r::ROW, theme::alpha(hover_bg, t));
-    let fg = if danger { mix(c::DANGER, c::WHITE, t) } else { mix(c::TEXT_SECONDARY, c::WHITE, t) };
+    let fg = if danger { mix(c::DANGER, c::WHITE, t) } else { mix(c::TEXT_SECONDARY, c::ON_BRAND, t) };
     paint_text(ui, rect.left_center() + Vec2::new(10.0, 0.0), Align2::LEFT_CENTER, label, f(ty::SMALL_MEDIUM), fg);
     paint_icon(ui, rect.right_center() - Vec2::new(18.0, 0.0), icon_code, 17.0, fg, false);
     resp.on_hover_cursor(CursorIcon::PointingHand)

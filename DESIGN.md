@@ -9,26 +9,31 @@ na żywo, akcja główna, błąd.
 
 ## Kolor
 
-Chłodne neutralne, lekko niebieskie. Powierzchnie rosną jasnością
-w stronę użytkownika.
+Chłodne neutralne, lekko niebieskie (odcień grafitowo-stalowy). Powierzchnie
+rosną jasnością w stronę użytkownika. Akcent to neonowa zieleń, wyraźnie inna
+niż fioletowo-niebieski Discorda; nie kopiujemy wartości z palet innych
+produktów. Akcent jest jasny i nasycony, więc używaj go oszczędnie.
+`success` (`#2dc770`) to spokojniejsza, chłodniejsza zieleń: nie zamieniaj ich.
 
 | Token | Hex | Użycie |
 |---|---|---|
-| `bg_stage` | `#0b0c0e` | scena wideo, tło pod streamem |
-| `bg_base` | `#111214` | tło okna, ekran startowy |
-| `bg_sidebar` | `#16171a` | panel boczny, panele użytkownika |
-| `bg_content` | `#1c1d21` | czat, karty, modale |
-| `bg_raised` | `#232428` | pola tekstowe, najechany wiersz |
-| `bg_selected` | `#2b2d32` | zaznaczony wiersz, przycisk drugorzędny |
-| `border` | `#2b2d32` | separatory 1px |
-| `border_strong` | `#3a3c42` | krawędzie pól w hover, pasek przewijania |
-| `text` | `#f2f3f5` | tekst główny |
-| `text_secondary` | `#b5bac1` | nazwy kanałów, opisy |
-| `text_muted` | `#949ba4` | metadane, czas, nagłówki sekcji, placeholdery (5.5:1 na `bg_raised`) |
-| `brand` | `#5b6cff` / hover `#4c5cf0` / active `#4050d8` | akcja główna, zaznaczenie, link, fokus |
-| `success` | `#2dc770` | mówienie, „połączono”, P2P |
+| `bg_stage` | `#0a0c0f` | scena wideo, tło pod streamem |
+| `bg_base` | `#101216` | tło okna, ekran startowy |
+| `bg_sidebar` | `#15181d` | panel boczny, panele użytkownika |
+| `bg_content` | `#1b1e24` | czat, karty, modale |
+| `bg_raised` | `#22262c` | pola tekstowe, najechany wiersz |
+| `bg_selected` | `#2a2e36` | zaznaczony wiersz, przycisk drugorzędny |
+| `border` | `#2a2e36` | separatory 1px |
+| `border_strong` | `#3b404a` | krawędzie pól w hover, pasek przewijania |
+| `text` | `#eef1f5` | tekst główny |
+| `text_secondary` | `#aeb5bf` | nazwy kanałów, opisy |
+| `text_muted` | `#99a1ad` | metadane, czas, nagłówki sekcji, placeholdery (5.8:1 na `bg_raised`) |
+| `brand` | `#5cff3a` / hover `#4ae62c` | akcja główna, zaznaczenie, link, fokus (12.6:1 na `bg_content`) |
+| `on_brand` | `#0a0c0f` | tekst i ikony na pełnym tle `brand` (14.8:1); biały na neonowej zieleni jest nieczytelny |
+| `success` | `#2dc770` | „połączono”, P2P, „Skopiowano” |
+| `speaking` | `#2ee6ff` | mówienie: pierścień awatara, ramka kafelka |
 | `danger` | `#ed4b55` / hover `#d83c46` | NA ŻYWO, rozłącz, wyciszony, błędy |
-| `warning` | `#f0b232` | relay (połączenie pośrednie) |
+| `warning` | `#f2a93b` | relay (połączenie pośrednie) |
 
 Awatary: 8 nasyconych barw przypisywanych deterministycznie z ID węzła.
 
@@ -59,10 +64,10 @@ kreski. Bez emoji i znaków Unicode zamiast ikon.
 ## Komponenty
 
 - **Wiersz kanału / uczestnika**: wysokość 32/30, promień 6, hover `bg_raised`, zaznaczony `bg_selected` + tekst `text`.
-- **Awatar**: koło z inicjałem na barwie użytkownika; mówienie = pierścień `success` 2px z odstępem; kropka statusu w rogu.
+- **Awatar**: koło z inicjałem na barwie użytkownika; mówienie = pierścień `speaking` 2px z odstępem; kropka statusu w rogu.
 - **Znacznik NA ŻYWO**: `danger`, wersaliki 10/Bold, promień 4.
 - **Przyciski**: primary (`brand`), secondary (`bg_selected`), danger, ghost; wysokość 36 (34 w panelach), promień 8; ikonowe 32×32 promień 6.
-- **Kafelek uczestnika**: 16:9, promień 12, tło z barwy użytkownika przyciemnione, ramka `success` 2px przy mówieniu.
+- **Kafelek uczestnika**: 16:9, promień 12, tło z barwy użytkownika przyciemnione, ramka `speaking` 2px przy mówieniu.
 - **Pole tekstowe**: `bg_raised`, bez obramowania, fokus = obrys `brand` 1px.
 - **Modal**: `bg_content`, promień 12, stopka `bg_sidebar` z akcjami po prawej.
 

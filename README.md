@@ -1,8 +1,8 @@
 # BibiCord
 
-Minimalistyczny „Discord” w Ruście, **bez serwera**: czat tekstowy, głos
-i udostępnianie ekranu w jakości źródła. Działa na Windows 10, Windows 11
-i macOS 14+.
+Minimalistyczny komunikator dla znajomych w Ruście, inspirowany Discordem,
+**bez serwera**: czat tekstowy, głos i udostępnianie ekranu w jakości
+źródła. Działa na Windows 10, Windows 11 i macOS 14+.
 
 ## Pobierz
 
@@ -18,7 +18,7 @@ proponuje aktualizację. Wszystkie wersje: [Releases](https://github.com/Minfdev
 
 ## Interfejs
 
-Ciemny, zwarty układ wzorowany na Discordzie: lista kanałów i uczestników po
+Ciemny, zwarty układ znany z komunikatorów dla graczy: lista kanałów i uczestników po
 lewej, czat albo scena głosowa w środku, panel połączenia i własny profil
 (mikrofon, słuchawki, ustawienia) na dole paska.
 
@@ -168,3 +168,9 @@ Ikony Phosphor: MIT.
 
 Pobierane/dołączane buildy FFmpeg są na licencji GPL. Przy dystrybucji
 paczek z FFmpeg obowiązują jej warunki.
+
+## Znaki towarowe
+
+BibiCord nie jest powiązany z Discord Inc. ani przez nią wspierany.
+„Discord” jest znakiem towarowym Discord Inc. i pojawia się tu wyłącznie
+w celu opisania projektu.
