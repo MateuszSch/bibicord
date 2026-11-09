@@ -333,23 +333,8 @@ impl App {
         if header(ui, "Ustawienia głosu", "Urządzenia audio używane w rozmowie.") {
             self.dialog = None;
         }
-        let (inputs, outputs) = self.audio_devices.clone().unwrap_or_default();
-        let mut dev = self.node.devices();
-        let mut changed = false;
         body(ui, |ui| {
-            w::field_label(ui, "Mikrofon");
-            changed |= device_combo(ui, "dev_in", &mut dev.input, &inputs);
-            ui.add_space(sp::M);
-            w::field_label(ui, "Głośniki / słuchawki");
-            changed |= device_combo(ui, "dev_out", &mut dev.output, &outputs);
-            ui.add_space(sp::L);
-            w::separator(ui, c::BORDER);
-            ui.add_space(sp::M);
-            self.mic_ui(ui);
-            ui.add_space(sp::L);
-            w::separator(ui, c::BORDER);
-            ui.add_space(sp::M);
-            self.sounds_ui(ui, dev.output.clone());
+            self.audio_settings(ui);
             ui.add_space(sp::L);
             w::separator(ui, c::BORDER);
             ui.add_space(sp::M);
@@ -382,14 +367,34 @@ impl App {
                 self.open_profile();
             }
         });
-        if changed {
-            self.node.set_devices(dev);
-        }
         footer(ui, |ui| {
             if Button::new("Gotowe", Kind::Primary).show(ui).clicked() {
                 self.dialog = None;
             }
         });
+    }
+
+    /// Devices, microphone processing and notification sounds. Works without
+    /// a room: changes are stored and used by the next voice connection.
+    pub(crate) fn audio_settings(&mut self, ui: &mut Ui) {
+        let (inputs, outputs) = self.audio_devices.get_or_insert_with(crate::voice::list_devices).clone();
+        let mut dev = self.node.devices();
+        w::field_label(ui, "Mikrofon");
+        let mut changed = device_combo(ui, "dev_in", &mut dev.input, &inputs);
+        ui.add_space(sp::M);
+        w::field_label(ui, "Głośniki / słuchawki");
+        changed |= device_combo(ui, "dev_out", &mut dev.output, &outputs);
+        ui.add_space(sp::L);
+        w::separator(ui, c::BORDER);
+        ui.add_space(sp::M);
+        self.mic_ui(ui);
+        ui.add_space(sp::L);
+        w::separator(ui, c::BORDER);
+        ui.add_space(sp::M);
+        self.sounds_ui(ui, dev.output.clone());
+        if changed {
+            self.node.set_devices(dev);
+        }
     }
 
     /// Microphone processing: noise suppression and sensitivity (dBFS) with a live level meter.

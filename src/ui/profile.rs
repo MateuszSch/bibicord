@@ -45,6 +45,8 @@ impl App {
         }
         self.profile.name = self.name.clone();
         self.profile.note = None;
+        // Fresh device list: headsets may have been plugged in since.
+        self.audio_devices = Some(crate::voice::list_devices());
         self.view = View::Profile;
     }
 
@@ -179,7 +181,11 @@ impl App {
         ui.add_space(sp::XS);
         ui.label(w::text("Nazwę i zdjęcie zobaczą znajomi w pokoju.", ty::SMALL, c::TEXT_MUTED));
         ui.add_space(sp::XL);
-        self.profile_form(ui, width);
+        // The card is fixed-size: scroll when the audio settings do not fit.
+        egui::ScrollArea::vertical().max_height(420.0).auto_shrink([false, true]).show(ui, |ui| {
+            ui.set_width(width);
+            self.profile_form(ui, width);
+        });
         back |= ui.input(|i| i.key_pressed(Key::Escape)) && ui.ctx().memory(|m| m.focused().is_none());
         if back {
             self.close_profile();
@@ -322,5 +328,14 @@ impl App {
                 ui.label(w::text(text, ty::SMALL, col));
             });
         }
+
+        // Sound: available offline (start screen), applied to the next call.
+        ui.add_space(sp::XL);
+        w::separator(ui, c::BORDER);
+        ui.add_space(sp::L);
+        ui.label(w::text("Dźwięk", ty::HEADING, c::TEXT));
+        ui.add_space(sp::M);
+        ui.spacing_mut().item_spacing = Vec2::new(sp::S, sp::XS);
+        self.audio_settings(ui);
     }
 }
