@@ -134,6 +134,7 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         let events = Events::new(tx, cc.egui_ctx.clone());
         let node = Node::new(rt, events);
+        node.set_voice_prefs(crate::voice::Prefs::load());
 
         let ffmpeg_status = Arc::new(Mutex::new("Przygotowywanie FFmpeg…".to_string()));
         {

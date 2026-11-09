@@ -63,6 +63,10 @@ lewej, czat albo scena głosowa w środku, panel połączenia i własny profil
   wyłącza się po wyjściu z głosowego. Kamerę wybiera się w „Ustawieniach głosu”.
 - **Głos.** Opus 48 kHz z FEC, wysyłany w datagramach QUIC (bez retransmisji),
   z buforem jitter i miksowaniem.
+  Mikrofon przechodzi przez redukcję szumów (RNNoise, wyłączalna), a czułość
+  wykrywania mowy jest automatyczna albo ustawiana ręcznie jako próg w dBFS
+  (z podglądem poziomu). Ustawienia dźwięku są w „Ustawieniach głosu” i na
+  stronie profilu, także przed dołączeniem do pokoju.
 - **Dźwięki.** Krótkie sygnały przy wejściu i wyjściu z rozmowy (Twoim
   i znajomych), wyciszeniu mikrofonu i słuchawek, starcie i końcu streamu oraz
   nowej wiadomości. Są syntezowane w kodzie (`src/sounds.rs`), nie pochodzą
