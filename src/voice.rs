@@ -18,7 +18,7 @@ use bytes::Bytes;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use iroh::EndpointId;
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -59,9 +59,38 @@ pub struct Voice {
 struct Shared {
     muted: AtomicBool,
     deafened: AtomicBool,
+    noise_suppression: AtomicBool,
+    /// Manual voice-activation threshold in dBFS, or `AUTO`.
+    sensitivity: AtomicI32,
+    /// Last microphone frame level in dBFS (`f32` bits), after suppression.
+    mic_level: AtomicU32,
     out_rate: Mutex<u32>,
     peers: Mutex<HashMap<EndpointId, PeerAudio>>,
     me_speaking_until: Mutex<Instant>,
+}
+
+const AUTO: i32 = i32::MIN;
+
+impl Shared {
+    fn new(muted: bool, deafened: bool, prefs: Prefs) -> Self {
+        let s = Shared {
+            muted: AtomicBool::new(muted),
+            deafened: AtomicBool::new(deafened),
+            noise_suppression: AtomicBool::new(false),
+            sensitivity: AtomicI32::new(AUTO),
+            mic_level: AtomicU32::new((-100f32).to_bits()),
+            out_rate: Mutex::new(RATE),
+            peers: Mutex::new(HashMap::new()),
+            me_speaking_until: Mutex::new(Instant::now()),
+        };
+        s.set_prefs(prefs);
+        s
+    }
+
+    fn set_prefs(&self, p: Prefs) {
+        self.noise_suppression.store(p.noise_suppression, Ordering::Relaxed);
+        self.sensitivity.store(p.sensitivity.unwrap_or(AUTO), Ordering::Relaxed);
+    }
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -325,14 +354,9 @@ impl Voice {
         devices: Devices,
         muted: bool,
         deafened: bool,
+        prefs: Prefs,
     ) -> Result<Self> {
-        let shared = Arc::new(Shared {
-            muted: AtomicBool::new(muted),
-            deafened: AtomicBool::new(deafened),
-            out_rate: Mutex::new(RATE),
-            peers: Mutex::new(HashMap::new()),
-            me_speaking_until: Mutex::new(Instant::now()),
-        });
+        let shared = Arc::new(Shared::new(muted, deafened, prefs));
         let stop = Arc::new(AtomicBool::new(false));
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         {
@@ -372,6 +396,16 @@ impl Voice {
 
     pub fn set_deafened(&self, d: bool) {
         self.shared.deafened.store(d, Ordering::Relaxed);
+    }
+
+    /// Applies noise suppression / sensitivity changes live.
+    pub fn set_prefs(&self, p: Prefs) {
+        self.shared.set_prefs(p);
+    }
+
+    /// Current microphone level in dBFS (what the voice gate compares).
+    pub fn mic_level_db(&self) -> f32 {
+        f32::from_bits(self.shared.mic_level.load(Ordering::Relaxed))
     }
 
     /// Receive counters per peer.
@@ -432,6 +466,54 @@ pub struct Devices {
     pub output: Option<String>,
 }
 
+/// Microphone processing preferences.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Prefs {
+    pub noise_suppression: bool,
+    /// Voice-activation threshold in dBFS; `None` = automatic (adaptive).
+    pub sensitivity: Option<i32>,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Prefs { noise_suppression: true, sensitivity: None }
+    }
+}
+
+fn prefs_file() -> std::path::PathBuf {
+    crate::ffmpeg::data_dir().join("voice.txt")
+}
+
+impl Prefs {
+    pub fn load() -> Self {
+        std::fs::read_to_string(prefs_file()).map(|s| Prefs::parse(&s)).unwrap_or_default()
+    }
+
+    fn parse(s: &str) -> Self {
+        let mut p = Prefs::default();
+        for line in s.lines() {
+            match line.split_once('=').map(|(k, v)| (k.trim(), v.trim())) {
+                Some(("noise_suppression", v)) => p.noise_suppression = v != "0",
+                Some(("sensitivity", v)) => {
+                    p.sensitivity = v.parse::<i32>().ok().map(|d| d.clamp(crate::mic::DB_MIN, crate::mic::DB_MAX))
+                }
+                _ => {}
+            }
+        }
+        p
+    }
+
+    fn format(&self) -> String {
+        let sens = self.sensitivity.map_or("auto".to_string(), |d| d.to_string());
+        format!("noise_suppression={}\nsensitivity={sens}\n", self.noise_suppression as u8)
+    }
+
+    pub fn save(&self) {
+        let _ = std::fs::create_dir_all(crate::ffmpeg::data_dir());
+        let _ = std::fs::write(prefs_file(), self.format());
+    }
+}
+
 /// One selectable audio device.
 #[derive(Debug, Clone)]
 pub struct DeviceInfo {
@@ -482,17 +564,26 @@ fn capture_pipeline(
     let mut hang = 0u32;
     // Encoded but unsent frames, replayed when the gate opens.
     let mut preroll: VecDeque<Bytes> = VecDeque::with_capacity(PREROLL + 1);
+    let mut denoise = crate::mic::Denoise::new();
     Ok(move |mono: &[f32]| {
         resample.process(mono, &mut pending);
         while pending.len() >= FRAME {
-            let frame: Vec<f32> = pending.drain(..FRAME).collect();
+            let mut frame: Vec<f32> = pending.drain(..FRAME).collect();
             let this = seq;
             seq = seq.wrapping_add(1);
+            if shared.noise_suppression.load(Ordering::Relaxed) {
+                denoise.process(&mut frame);
+            }
             // Noise floor: follows quiet frames down immediately, creeps up
             // ~1 dB/s so steady background noise does not count as speech.
             let level = rms(&frame);
             floor = if level < floor { level.max(1e-5) } else { floor * 1.0023 };
-            let voiced = level > VAD_MIN && level > floor * VAD_OVER_FLOOR;
+            let level_db = crate::mic::db(level);
+            shared.mic_level.store(level_db.to_bits(), Ordering::Relaxed);
+            let voiced = match shared.sensitivity.load(Ordering::Relaxed) {
+                AUTO => level > VAD_MIN && level > floor * VAD_OVER_FLOOR,
+                threshold => level_db >= threshold as f32,
+            };
             if shared.muted.load(Ordering::Relaxed) {
                 hang = 0;
                 preroll.clear();
@@ -754,15 +845,8 @@ pub(crate) mod sim {
     }
 
     pub fn run(net: &Net, secs: f64) -> Report {
-        let shared = |_| {
-            Arc::new(Shared {
-                muted: AtomicBool::new(false),
-                deafened: AtomicBool::new(false),
-                out_rate: Mutex::new(RATE),
-                peers: Mutex::new(HashMap::new()),
-                me_speaking_until: Mutex::new(Instant::now()),
-            })
-        };
+        // Network simulation: the synthetic tone is not run through RNNoise.
+        let shared = |_| Arc::new(Shared::new(false, false, Prefs { noise_suppression: false, sensitivity: None }));
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut capture = capture_pipeline(shared(0), tx, RATE).unwrap();
         let rx_voice = Voice { shared: shared(1), stop: Arc::new(AtomicBool::new(false)) };
@@ -913,7 +997,39 @@ pub(crate) mod sim {
 
 #[cfg(test)]
 mod tests {
-    use super::Linear;
+    use super::*;
+
+    #[test]
+    fn prefs_roundtrip() {
+        assert_eq!(Prefs::parse(""), Prefs::default());
+        for p in [Prefs::default(), Prefs { noise_suppression: false, sensitivity: Some(-42) }] {
+            assert_eq!(Prefs::parse(&p.format()), p);
+        }
+        assert_eq!(Prefs::parse("sensitivity=-200").sensitivity, Some(crate::mic::DB_MIN));
+        assert_eq!(Prefs::parse("sensitivity=auto").sensitivity, None);
+    }
+
+    /// A manual threshold gates on level alone: -30 dBFS speech passes a
+    /// -40 dB threshold and is blocked by a -20 dB one.
+    #[test]
+    fn manual_threshold_gates() {
+        let sent = |threshold| {
+            let shared = Arc::new(Shared::new(false, false, Prefs { noise_suppression: false, sensitivity: Some(threshold) }));
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let mut capture = capture_pipeline(shared.clone(), tx, RATE).unwrap();
+            for k in 0..50 {
+                let frame: Vec<f32> = (0..FRAME)
+                    .map(|i| 0.0447 * ((k * FRAME + i) as f32 / RATE as f32 * 2.0 * std::f32::consts::PI * 220.0).sin())
+                    .collect();
+                capture(&frame);
+            }
+            let level = f32::from_bits(shared.mic_level.load(Ordering::Relaxed));
+            assert!((level + 30.0).abs() < 0.5, "{level}");
+            std::iter::from_fn(|| rx.try_recv().ok()).count()
+        };
+        assert!(sent(-40) >= 49);
+        assert_eq!(sent(-20), 0);
+    }
 
     #[test]
     fn resampler_keeps_rate() {

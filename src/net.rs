@@ -89,6 +89,7 @@ struct State {
     room: String,
     mute: MuteState,
     devices: crate::voice::Devices,
+    voice_prefs: crate::voice::Prefs,
     peers: HashMap<EndpointId, PeerConn>,
     dialing: HashSet<EndpointId>,
     broadcast: Option<video::encode::Broadcast>,
@@ -697,12 +698,14 @@ impl Node {
         let n = self.clone();
         self.spawn(async move {
             let (tx, mut rx) = mpsc::unbounded_channel::<Bytes>();
-            let (devices, mute) = {
+            let (devices, mute, prefs) = {
                 let s = n.0.state.lock().unwrap();
-                (s.devices.clone(), s.mute)
+                (s.devices.clone(), s.mute, s.voice_prefs)
             };
-            match tokio::task::spawn_blocking(move || Voice::start(tx, devices, mute.muted || mute.deafened, mute.deafened))
-                .await
+            match tokio::task::spawn_blocking(move || {
+                Voice::start(tx, devices, mute.muted || mute.deafened, mute.deafened, prefs)
+            })
+            .await
             {
                 Ok(Ok(v)) => {
                     n.0.state.lock().unwrap().voice = Some(Arc::new(v));
@@ -758,6 +761,22 @@ impl Node {
         if in_voice {
             self.0.state.lock().unwrap().voice = None;
             self.join_voice();
+        }
+    }
+
+    pub fn voice_prefs(&self) -> crate::voice::Prefs {
+        self.0.state.lock().unwrap().voice_prefs
+    }
+
+    /// Changes microphone processing; applied live to an active call.
+    pub fn set_voice_prefs(&self, prefs: crate::voice::Prefs) {
+        let voice = {
+            let mut s = self.0.state.lock().unwrap();
+            s.voice_prefs = prefs;
+            s.voice.clone()
+        };
+        if let Some(v) = voice {
+            v.set_prefs(prefs);
         }
     }
 

@@ -333,19 +333,8 @@ impl App {
         if header(ui, "Ustawienia głosu", "Urządzenia audio używane w rozmowie.") {
             self.dialog = None;
         }
-        let (inputs, outputs) = self.audio_devices.clone().unwrap_or_default();
-        let mut dev = self.node.devices();
-        let mut changed = false;
         body(ui, |ui| {
-            w::field_label(ui, "Mikrofon");
-            changed |= device_combo(ui, "dev_in", &mut dev.input, &inputs);
-            ui.add_space(sp::M);
-            w::field_label(ui, "Głośniki / słuchawki");
-            changed |= device_combo(ui, "dev_out", &mut dev.output, &outputs);
-            ui.add_space(sp::L);
-            w::separator(ui, c::BORDER);
-            ui.add_space(sp::M);
-            self.sounds_ui(ui, dev.output.clone());
+            self.audio_settings(ui);
             ui.add_space(sp::L);
             w::separator(ui, c::BORDER);
             ui.add_space(sp::M);
@@ -378,14 +367,91 @@ impl App {
                 self.open_profile();
             }
         });
-        if changed {
-            self.node.set_devices(dev);
-        }
         footer(ui, |ui| {
             if Button::new("Gotowe", Kind::Primary).show(ui).clicked() {
                 self.dialog = None;
             }
         });
+    }
+
+    /// Devices, microphone processing and notification sounds. Works without
+    /// a room: changes are stored and used by the next voice connection.
+    pub(crate) fn audio_settings(&mut self, ui: &mut Ui) {
+        let (inputs, outputs) = self.audio_devices.get_or_insert_with(crate::voice::list_devices).clone();
+        let mut dev = self.node.devices();
+        w::field_label(ui, "Mikrofon");
+        let mut changed = device_combo(ui, "dev_in", &mut dev.input, &inputs);
+        ui.add_space(sp::M);
+        w::field_label(ui, "Głośniki / słuchawki");
+        changed |= device_combo(ui, "dev_out", &mut dev.output, &outputs);
+        ui.add_space(sp::L);
+        w::separator(ui, c::BORDER);
+        ui.add_space(sp::M);
+        self.mic_ui(ui);
+        ui.add_space(sp::L);
+        w::separator(ui, c::BORDER);
+        ui.add_space(sp::M);
+        self.sounds_ui(ui, dev.output.clone());
+        if changed {
+            self.node.set_devices(dev);
+        }
+    }
+
+    /// Microphone processing: noise suppression and sensitivity (dBFS) with a live level meter.
+    fn mic_ui(&mut self, ui: &mut Ui) {
+        use crate::mic::{DB_MAX, DB_MIN};
+        let before = self.node.voice_prefs();
+        let mut p = before;
+        w::field_label(ui, "Redukcja szumów");
+        ui.horizontal(|ui| {
+            if w::chip(ui, "Włączona", p.noise_suppression).clicked() {
+                p.noise_suppression = true;
+            }
+            if w::chip(ui, "Wyłączona", !p.noise_suppression).clicked() {
+                p.noise_suppression = false;
+            }
+        });
+        ui.label(w::text("Tłumi wentylatory, klawiaturę i szum tła (RNNoise).", ty::SMALL, c::TEXT_MUTED));
+        ui.add_space(sp::M);
+
+        let value = p.sensitivity.map_or("Automatyczna".into(), |d| format!("{d} dB"));
+        w::field_label_value(ui, "Czułość mikrofonu", &value);
+        ui.horizontal(|ui| {
+            if w::chip(ui, "Automatyczna", p.sensitivity.is_none()).clicked() {
+                p.sensitivity = None;
+            }
+            if w::chip(ui, "Ręczna", p.sensitivity.is_some()).clicked() && p.sensitivity.is_none() {
+                p.sensitivity = Some(-50);
+            }
+        });
+        ui.add_space(sp::S);
+        let width = ui.available_width();
+        if let Some(db) = p.sensitivity.as_mut() {
+            ui.spacing_mut().slider_width = width;
+            ui.add(egui::Slider::new(db, DB_MIN..=DB_MAX).show_value(false));
+        }
+        // Level meter: lit while the voice gate is open.
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 6.0), egui::Sense::hover());
+        ui.painter().rect_filled(rect, 3.0, c::BG_BASE);
+        let voice = self.node.voice();
+        if let Some(v) = &voice {
+            let t = ((v.mic_level_db() - DB_MIN as f32) / (DB_MAX - DB_MIN) as f32).clamp(0.0, 1.0);
+            let mut lit = rect;
+            lit.set_width(rect.width() * t);
+            ui.painter().rect_filled(lit, 3.0, if v.me_speaking() { c::SUCCESS } else { c::TEXT_MUTED });
+            ui.ctx().request_repaint_after(Duration::from_millis(50));
+        }
+        ui.add_space(sp::XS);
+        let hint = match (&voice, p.sensitivity) {
+            (None, _) => "Dołącz do kanału głosowego, aby zobaczyć poziom mikrofonu.",
+            (Some(_), None) => "Próg dopasowuje się do szumu tła.",
+            (Some(_), Some(_)) => "Mówisz, gdy poziom przekracza próg na suwaku.",
+        };
+        ui.label(w::text(hint, ty::SMALL, c::TEXT_MUTED));
+        if p != before {
+            self.node.set_voice_prefs(p);
+            p.save();
+        }
     }
 
     /// Sound cues: on/off, volume and a preview.
