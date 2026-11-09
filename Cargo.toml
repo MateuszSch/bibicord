@@ -13,6 +13,7 @@ directories = "6.0.0"
 eframe = "0.37.0"
 egui-pop-phosphor = { version = "0.15.0", features = ["fill"] }
 ffmpeg-sidecar = "2.7.0"
+nnnoiseless = { version = "0.5.2", default-features = false }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 iroh = "1.4.1"
 opus = "0.4.0"
