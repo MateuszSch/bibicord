@@ -350,8 +350,17 @@ impl App {
             w::separator(ui, c::BORDER);
             ui.add_space(sp::M);
             w::field_label(ui, "Twój profil");
+            let mut edit = false;
             ui.horizontal(|ui| {
-                w::Avatar { name: &self.name, color: self.my_color(), radius: 18.0, speaking: 0.0, status: None }.show(ui);
+                w::Avatar {
+                    name: &self.name,
+                    color: self.my_color(),
+                    image: self.my_avatar_tex.as_ref(),
+                    radius: 18.0,
+                    speaking: 0.0,
+                    status: None,
+                }
+                .show(ui);
                 ui.vertical(|ui| {
                     ui.label(w::text(&self.name, ty::HEADING, c::TEXT));
                     ui.label(w::text(
@@ -360,7 +369,14 @@ impl App {
                         c::TEXT_MUTED,
                     ));
                 });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    edit = Button::new("Edytuj profil", Kind::Secondary).height(32.0).show(ui).clicked();
+                });
             });
+            if edit {
+                self.dialog = None;
+                self.open_profile();
+            }
         });
         if changed {
             self.node.set_devices(dev);

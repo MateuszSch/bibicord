@@ -62,6 +62,10 @@ lewej, czat albo scena głosowa w środku, panel połączenia i własny profil
   i znajomych), wyciszeniu mikrofonu i słuchawek, starcie i końcu streamu oraz
   nowej wiadomości. Są syntezowane w kodzie (`src/sounds.rs`), nie pochodzą
   z Discorda. Głośność i wyłączanie: „Ustawienia głosu”.
+- **Profil.** Nazwa i zdjęcie profilowe (JPG, PNG lub WebP, także
+  przeciągnięte do okna). Zdjęcie jest przycinane do kwadratu, zmniejszane do
+  160 px i zapisywane lokalnie; inni dostają je przy połączeniu, a zmiany
+  widzą od razu. Otwierasz go kliknięciem w swój awatar.
 
 > Bez serwera każdy widz pobiera pełny bitrate od nadawcy. Przy 30 Mb/s
 > i 3 widzach nadawca potrzebuje około 90 Mb/s wysyłania.

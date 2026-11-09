@@ -104,11 +104,14 @@ impl App {
             match kind {
                 ChatKind::Message { from, name, text } => {
                     let grouped = prev.is_some_and(|(pf, pt)| pf == *from && (*time - pt).num_minutes() < 5);
-                    let color = match from {
-                        Some(id) => self.peer(id).map(|p| p.color).unwrap_or_else(|| theme::avatar_color(id.as_bytes())),
-                        None => my_color,
+                    let (color, avatar) = match from {
+                        Some(id) => match self.peer(id) {
+                            Some(p) => (p.color, p.avatar.as_ref()),
+                            None => (theme::avatar_color(id.as_bytes()), self.gone_avatars.get(id)),
+                        },
+                        None => (my_color, self.my_avatar_tex.as_ref()),
                     };
-                    message(ui, name, color, text, *time, grouped, width);
+                    message(ui, name, color, avatar, text, *time, grouped, width);
                     prev = Some((*from, *time));
                 }
                 ChatKind::System { icon, who, text, good } => {
@@ -164,10 +167,12 @@ impl App {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn message(
     ui: &mut egui::Ui,
     name: &str,
     color: egui::Color32,
+    avatar: Option<&egui::TextureHandle>,
     text: &str,
     time: chrono::DateTime<chrono::Local>,
     grouped: bool,
@@ -201,7 +206,7 @@ fn message(
         ui.painter().with_clip_rect(row).rect_filled(row, 0.0, theme::alpha(c::BG_BASE, 0.35));
     }
     if !grouped {
-        Avatar { name, color, radius: 20.0, speaking: 0.0, status: None }
+        Avatar { name, color, image: avatar, radius: 20.0, speaking: 0.0, status: None }
             .paint(ui, Pos2::new(top.x + sp::L + 20.0, top.y + 22.0));
     } else if hovered {
         w::paint_text(

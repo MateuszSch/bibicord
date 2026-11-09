@@ -52,6 +52,8 @@ pub fn section_label(ui: &mut Ui, label: &str) {
 pub struct Avatar<'a> {
     pub name: &'a str,
     pub color: Color32,
+    /// Profile picture; the coloured initial is drawn when there is none.
+    pub image: Option<&'a egui::TextureHandle>,
     pub radius: f32,
     /// 0..1, animated speaking ring.
     pub speaking: f32,
@@ -62,21 +64,28 @@ pub struct Avatar<'a> {
 impl Avatar<'_> {
     pub fn paint(&self, ui: &Ui, center: Pos2) {
         let p = ui.painter();
-        p.circle_filled(center, self.radius, self.color);
-        let initial: String = self
-            .name
-            .trim()
-            .chars()
-            .next()
-            .map(|ch| ch.to_uppercase().collect())
-            .unwrap_or_else(|| "?".into());
-        p.text(
-            center + Vec2::new(0.0, 0.5),
-            Align2::CENTER_CENTER,
-            initial,
-            theme::font((self.radius * 0.95).max(10.0), W::SemiBold),
-            c::WHITE,
-        );
+        if let Some(tex) = self.image {
+            let rect = Rect::from_center_size(center, Vec2::splat(self.radius * 2.0));
+            egui::Image::from_texture((tex.id(), rect.size()))
+                .corner_radius(self.radius.min(255.0) as u8)
+                .paint_at(ui, rect);
+        } else {
+            p.circle_filled(center, self.radius, self.color);
+            let initial: String = self
+                .name
+                .trim()
+                .chars()
+                .next()
+                .map(|ch| ch.to_uppercase().collect())
+                .unwrap_or_else(|| "?".into());
+            p.text(
+                center + Vec2::new(0.0, 0.5),
+                Align2::CENTER_CENTER,
+                initial,
+                theme::font((self.radius * 0.95).max(10.0), W::SemiBold),
+                c::WHITE,
+            );
+        }
         if self.speaking > 0.0 {
             p.circle_stroke(
                 center,
@@ -218,7 +227,8 @@ impl<'a> Button<'a> {
             x += icon_w;
         }
         let ky = rect.center().y - galley.size().y / 2.0;
-        ui.painter().galley(Pos2::new(x, ky), galley, fg);
+        // The galley was laid out before the state colour was known.
+        ui.painter().galley_with_override_text_color(Pos2::new(x, ky), galley, fg);
         if self.enabled {
             resp.on_hover_cursor(CursorIcon::PointingHand)
         } else {
@@ -299,7 +309,7 @@ pub fn chip(ui: &mut Ui, label: &str, selected: bool) -> Response {
         ui.painter()
             .rect_stroke(rect, r::CONTROL, Stroke::new(1.0, c::BRAND), StrokeKind::Inside);
     }
-    ui.painter().galley(rect.center() - galley.size() / 2.0, galley, fg);
+    ui.painter().galley_with_override_text_color(rect.center() - galley.size() / 2.0, galley, fg);
     resp.on_hover_cursor(CursorIcon::PointingHand)
 }
 

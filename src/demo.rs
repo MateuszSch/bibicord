@@ -3,7 +3,8 @@
 //! (writes invite), `BIBICORD_DEMO_JOIN=<file>` (reads invite),
 //! `BIBICORD_DEMO_CHAT=a|b`, `BIBICORD_DEMO_STREAM=1`, `BIBICORD_DEMO_WATCH=1`,
 //! `BIBICORD_DEMO_VOICE=1`, `BIBICORD_DEMO_MUTE=1`, `BIBICORD_DEMO_VIEW=voice`,
-//! `BIBICORD_DEMO_STAGE_CHAT=1`, `BIBICORD_DEMO_DIALOG=golive|settings|invite|update|share`,
+//! `BIBICORD_DEMO_STAGE_CHAT=1`, `BIBICORD_DEMO_DIALOG=golive|settings|invite|update|share|profile`,
+//! `BIBICORD_DEMO_AVATAR=<image>` (not saved),
 //! `BIBICORD_DEMO_SHOT=<png>` + `BIBICORD_DEMO_SHOT_AFTER=<secs>`.
 
 use std::path::PathBuf;
@@ -11,6 +12,7 @@ use std::time::{Duration, Instant};
 
 pub struct Demo {
     pub name: Option<String>,
+    pub avatar: Option<PathBuf>,
     pub room: Option<String>,
     pub create: Option<PathBuf>,
     pub join: Option<PathBuf>,
@@ -41,6 +43,7 @@ impl Demo {
             .unwrap_or(8.0);
         Some(Demo {
             name: Some(name),
+            avatar: var("BIBICORD_DEMO_AVATAR").map(PathBuf::from),
             room: var("BIBICORD_DEMO_ROOM"),
             create: var("BIBICORD_DEMO_CREATE").map(PathBuf::from),
             join: var("BIBICORD_DEMO_JOIN").map(PathBuf::from),

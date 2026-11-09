@@ -5,7 +5,9 @@ use iroh::{EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-pub const ALPN: &[u8] = b"bibicord/3";
+/// Bumped on every incompatible change; mismatched versions get a clear
+/// "update the app" error instead of garbled messages.
+pub const ALPN: &[u8] = b"bibicord/4";
 
 /// First byte of every bidirectional stream.
 pub const TAG_CONTROL: u8 = 0;
@@ -59,6 +61,8 @@ pub enum Msg {
         voice: bool,
         muted: bool,
         deafened: bool,
+        /// Profile picture, PNG (see `avatar`).
+        avatar: Option<Vec<u8>>,
     },
     Chat {
         text: String,
@@ -69,6 +73,20 @@ pub enum Msg {
         muted: bool,
         deafened: bool,
     },
+    /// Display name or profile picture changed.
+    Profile {
+        name: String,
+        avatar: Option<Vec<u8>>,
+    },
+}
+
+/// Longest display name, in characters.
+pub const MAX_NAME: usize = 32;
+
+/// Display name as typed by the user: trimmed, single line, bounded.
+pub fn clean_name(name: &str) -> String {
+    let one_line: String = name.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    one_line.trim().chars().take(MAX_NAME).collect::<String>().trim().to_string()
 }
 
 pub async fn write_msg(w: &mut (impl AsyncWrite + Unpin), msg: &Msg) -> Result<()> {
@@ -172,5 +190,12 @@ mod tests {
         assert!(parse_code("K7QX-3MFA").is_none());
         let a = decode_ticket(&shown).unwrap();
         assert_eq!(a.id, code_key(&c).public());
+    }
+
+    #[test]
+    fn names_are_cleaned() {
+        assert_eq!(clean_name("  Ala\n Kot "), "Ala  Kot");
+        assert_eq!(clean_name(&"x".repeat(50)).chars().count(), MAX_NAME);
+        assert_eq!(clean_name(" \t "), "");
     }
 }

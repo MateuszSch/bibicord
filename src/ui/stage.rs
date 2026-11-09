@@ -135,7 +135,7 @@ impl App {
         p.rect_filled(rect, r::CARD, mix(bg, m.color, hover * 0.08));
         let avatar_r = (rect.height() * 0.2).clamp(16.0, 48.0);
         let speak = ui.ctx().animate_bool_with_time(id.with("speak"), m.speaking, if m.speaking { 0.08 } else { 0.3 });
-        Avatar { name: &m.name, color: m.color, radius: avatar_r, speaking: speak, status: None }
+        Avatar { name: &m.name, color: m.color, image: m.avatar.as_ref(), radius: avatar_r, speaking: speak, status: None }
             .paint(ui, rect.center() - Vec2::new(0.0, if rect.height() > 140.0 { 8.0 } else { 6.0 }));
         if speak > 0.0 {
             ui.painter().rect_stroke(
@@ -181,7 +181,7 @@ impl App {
             let g = ui.painter().layout_no_wrap(label.into(), f(ty::LABEL), c::TEXT);
             let b = Rect::from_center_size(rect.center(), g.size() + Vec2::new(28.0, 16.0));
             ui.painter().rect_filled(b, r::CONTROL, theme::alpha(c::BG_SELECTED, hover));
-            ui.painter().galley(b.center() - g.size() / 2.0, g, theme::alpha(c::TEXT, hover));
+            ui.painter().galley_with_override_text_color(b.center() - g.size() / 2.0, g, theme::alpha(c::TEXT, hover));
         }
         let resp = if watchable { resp.on_hover_cursor(CursorIcon::PointingHand) } else { resp };
         (watchable && resp.clicked()).then_some(m.id).flatten()

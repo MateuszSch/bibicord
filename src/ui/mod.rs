@@ -3,6 +3,7 @@
 
 mod chat;
 mod dialogs;
+mod profile;
 mod sidebar;
 mod stage;
 mod start;
@@ -25,11 +26,12 @@ pub(crate) struct PeerView {
     pub voice: bool,
     pub mute: MuteState,
     pub color: egui::Color32,
+    pub avatar: Option<TextureHandle>,
 }
 
 pub(crate) enum ChatKind {
     Message { from: Option<EndpointId>, name: String, text: String },
-    System { icon: &'static str, who: String, text: &'static str, good: bool },
+    System { icon: &'static str, who: String, text: String, good: bool },
 }
 
 pub(crate) struct ChatItem {
@@ -47,6 +49,8 @@ pub(crate) enum Screen {
 pub(crate) enum View {
     Chat,
     Voice,
+    /// Name and picture. Also shown on the start screen.
+    Profile,
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -68,6 +72,10 @@ pub struct App {
     pub(crate) ffmpeg_status: Arc<Mutex<String>>,
 
     pub(crate) name: String,
+    /// Profile picture (PNG) and its texture.
+    pub(crate) my_avatar: Option<Vec<u8>>,
+    pub(crate) my_avatar_tex: Option<TextureHandle>,
+    pub(crate) profile: profile::Edit,
     pub(crate) room_input: String,
     pub(crate) ticket_input: String,
     pub(crate) join_error: Option<String>,
@@ -77,6 +85,8 @@ pub struct App {
     pub(crate) my_id: Option<EndpointId>,
 
     pub(crate) peers: Vec<PeerView>,
+    /// Pictures of people who left, so their old messages keep them.
+    pub(crate) gone_avatars: std::collections::HashMap<EndpointId, TextureHandle>,
     pub(crate) chat: Vec<ChatItem>,
     pub(crate) chat_input: String,
     pub(crate) unread: usize,
@@ -134,8 +144,11 @@ impl App {
         }
 
         let name = std::fs::read_to_string(name_file())
-            .map(|s| s.trim().to_string())
+            .map(|s| crate::proto::clean_name(&s))
             .unwrap_or_default();
+        let my_avatar = crate::avatar::load();
+        let my_avatar_tex = my_avatar.as_deref().and_then(|png| profile::texture(&cc.egui_ctx, "me", png));
+        node.set_avatar(my_avatar.clone());
 
         App {
             node,
@@ -146,6 +159,9 @@ impl App {
             net_ready: false,
             ffmpeg_status,
             name,
+            my_avatar,
+            my_avatar_tex,
+            profile: Default::default(),
             room_input: String::new(),
             ticket_input: String::new(),
             join_error: None,
@@ -154,6 +170,7 @@ impl App {
             room: String::new(),
             my_id: None,
             peers: Vec::new(),
+            gone_avatars: Default::default(),
             chat: Vec::new(),
             chat_input: String::new(),
             unread: 0,
@@ -191,7 +208,8 @@ impl App {
         }
     }
 
-    fn system(&mut self, icon: &'static str, who: String, text: &'static str, good: bool) {
+    fn system(&mut self, icon: &'static str, who: String, text: impl Into<String>, good: bool) {
+        let text = text.into();
         self.chat.push(ChatItem {
             kind: ChatKind::System { icon, who, text, good },
             time: chrono::Local::now(),
@@ -237,7 +255,7 @@ impl App {
     }
 
     fn chat_visible(&self) -> bool {
-        self.view == View::Chat || self.stage_chat
+        self.view == View::Chat || (self.view == View::Voice && self.stage_chat)
     }
 
     fn handle_events(&mut self, ctx: &egui::Context) {
@@ -254,9 +272,12 @@ impl App {
                     self.room = r;
                     ctx.send_viewport_cmd(ViewportCommand::Title(format!("{} – BibiCord", self.room)));
                 }
-                Event::PeerJoined { id, name } => {
+                Event::PeerJoined { id, name, avatar } => {
+                    let tex = avatar.as_deref().and_then(|png| profile::texture(ctx, &format!("peer {id}"), png));
+                    self.gone_avatars.remove(&id);
                     if let Some(p) = self.peers.iter_mut().find(|p| p.id == id) {
                         p.name = name;
+                        p.avatar = tex;
                     } else {
                         self.status.clear();
                         self.system(ic::ARROW_RIGHT, name.clone(), "dołącza do pokoju.", true);
@@ -267,7 +288,21 @@ impl App {
                             voice: false,
                             mute: MuteState::default(),
                             color: theme::avatar_color(id.as_bytes()),
+                            avatar: tex,
                         });
+                    }
+                }
+                Event::PeerProfile { id, name, avatar } => {
+                    let tex = avatar.as_deref().and_then(|png| profile::texture(ctx, &format!("peer {id}"), png));
+                    let mut renamed = None;
+                    if let Some(p) = self.peers.iter_mut().find(|p| p.id == id) {
+                        if p.name != name {
+                            renamed = Some(std::mem::replace(&mut p.name, name.clone()));
+                        }
+                        p.avatar = tex;
+                    }
+                    if let Some(old) = renamed {
+                        self.system(ic::PENCIL_SIMPLE, old, format!("zmienia nazwę na „{name}”."), false);
                     }
                 }
                 Event::PeerLeft { id } => {
@@ -276,6 +311,9 @@ impl App {
                             self.cue(Cue::PeerLeave);
                         }
                         let n = p.name.clone();
+                        if let Some(tex) = p.avatar.clone() {
+                            self.gone_avatars.insert(id, tex);
+                        }
                         self.system(ic::ARROW_LEFT, n, "opuszcza pokój.", false);
                     }
                     self.peers.retain(|p| p.id != id);
@@ -372,7 +410,9 @@ impl App {
         }
         self.node.leave();
         self.screen = Screen::Start;
+        self.view = View::Chat;
         self.peers.clear();
+        self.gone_avatars.clear();
         self.chat.clear();
         self.unread = 0;
         self.ticket = None;
@@ -468,11 +508,15 @@ impl App {
                 .show(ui, |ui| self.chat_view(ui, true));
         }
         let fill = if self.view == View::Voice { c::BG_STAGE } else { c::BG_CONTENT };
+        if self.view != View::Profile {
+            self.profile.discard();
+        }
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(fill))
             .show(ui, |ui| match self.view {
                 View::Chat => self.chat_view(ui, false),
                 View::Voice => self.stage(ui),
+                View::Profile => self.profile_page(ui),
             });
     }
 
@@ -516,6 +560,13 @@ impl App {
         let Some(mut demo) = self.demo.take() else { return };
         let d = &mut demo;
         ctx.request_repaint_after(Duration::from_millis(200));
+        if let Some(path) = d.avatar.take() {
+            // In memory only: a demo run must not replace the saved picture.
+            match crate::avatar::prepare(&path) {
+                Ok(png) => self.set_avatar(ctx, Some(png), false),
+                Err(e) => tracing::warn!("demo avatar: {e:#}"),
+            }
+        }
         if self.screen == Screen::Start && self.net_ready && (d.create.is_some() || d.join.is_some()) {
             if let Some(n) = d.name.take() {
                 self.name = n;
@@ -576,6 +627,7 @@ impl App {
                 Some("invite") => self.dialog = Some(Dialog::Invite),
                 Some("update") => self.dialog = Some(Dialog::Update),
                 Some("share") => self.dialog = Some(Dialog::Share),
+                Some("profile") => self.open_profile(),
                 _ => {}
             }
         }

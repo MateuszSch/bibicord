@@ -13,6 +13,7 @@ pub(crate) struct Member {
     pub id: Option<EndpointId>, // None = me
     pub name: String,
     pub color: Color32,
+    pub avatar: Option<egui::TextureHandle>,
     pub voice: bool,
     pub live: bool,
     pub mute: MuteState,
@@ -29,6 +30,7 @@ impl App {
             id: None,
             name: self.name.clone(),
             color: self.my_color(),
+            avatar: self.my_avatar_tex.clone(),
             voice: self.my_voice,
             live: self.my_stream.is_some(),
             mute: self.mute,
@@ -39,6 +41,7 @@ impl App {
                 id: Some(p.id),
                 name: p.name.clone(),
                 color: p.color,
+                avatar: p.avatar.clone(),
                 voice: p.voice,
                 live: p.stream.is_some(),
                 mute: p.mute,
@@ -113,6 +116,9 @@ impl App {
                 if w::menu_item(ui, "Wyślij link do BibiCord", ic::DOWNLOAD_SIMPLE, false).clicked() {
                     action = Some(3);
                 }
+                if w::menu_item(ui, "Profil", ic::USER_CIRCLE, false).clicked() {
+                    action = Some(4);
+                }
                 if w::menu_item(ui, "Ustawienia", ic::GEAR_SIX, false).clicked() {
                     action = Some(1);
                 }
@@ -128,6 +134,7 @@ impl App {
             Some(1) => self.open_settings(),
             Some(2) => self.leave_room(&ui.ctx().clone()),
             Some(3) => self.dialog = Some(Dialog::Share),
+            Some(4) => self.open_profile(),
             _ => {}
         }
     }
@@ -234,7 +241,7 @@ impl App {
             m.speaking,
             if m.speaking { 0.08 } else { 0.3 },
         );
-        Avatar { name: &m.name, color: m.color, radius: 10.0, speaking: speak, status: None }
+        Avatar { name: &m.name, color: m.color, image: m.avatar.as_ref(), radius: 10.0, speaking: speak, status: None }
             .paint(ui, rect.left_center() + Vec2::new(46.0, 0.0));
         let mut right = rect.right() - 6.0;
         let mut clicked_live = false;
@@ -292,7 +299,7 @@ impl App {
             _ => (c::TEXT_MUTED, "Nawiązywanie połączenia…".to_string()),
         };
         let surface = theme::mix(c::BG_SIDEBAR, c::BG_RAISED, t);
-        Avatar { name: &m.name, color: m.color, radius: 15.0, speaking: 0.0, status: Some((dot, surface)) }
+        Avatar { name: &m.name, color: m.color, image: m.avatar.as_ref(), radius: 15.0, speaking: 0.0, status: Some((dot, surface)) }
             .paint(ui, rect.left_center() + Vec2::new(24.0, 0.0));
         let mut right = rect.right() - 8.0;
         if m.live {
@@ -410,18 +417,31 @@ impl App {
         ui.horizontal(|ui| {
             ui.set_height(40.0);
             let (ar, _) = ui.allocate_exact_size(Vec2::new(36.0, 40.0), Sense::hover());
+            let buttons_w = 3.0 * 32.0;
+            let (tr, _) = ui.allocate_exact_size(Vec2::new(width - 40.0 - buttons_w - 4.0, 40.0), Sense::hover());
+            // Avatar + name open the profile page.
+            let me_rect = ar.union(tr).expand2(Vec2::new(2.0, 0.0));
+            let me = ui
+                .interact(me_rect, ui.make_persistent_id("me_profile"), Sense::click())
+                .on_hover_text("Profil: nazwa i zdjęcie")
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            let t = w::hover_t(ui, &me);
+            let surface = theme::mix(c::BG_BASE, c::BG_RAISED, t);
+            ui.painter().rect_filled(me_rect, r::ROW, surface);
+            if me.clicked() {
+                self.open_profile();
+            }
             let me_speaking = self.node.voice().is_some_and(|v| v.me_speaking()) && !self.mute.muted;
             let speak = ui.ctx().animate_bool_with_time(ui.scope_id().with("me_speak"), me_speaking, 0.2);
             Avatar {
                 name: &self.name,
                 color: self.my_color(),
+                image: self.my_avatar_tex.as_ref(),
                 radius: 16.0,
                 speaking: speak,
-                status: Some((c::SUCCESS, c::BG_BASE)),
+                status: Some((c::SUCCESS, surface)),
             }
             .paint(ui, ar.center());
-            let buttons_w = 3.0 * 32.0;
-            let (tr, _) = ui.allocate_exact_size(Vec2::new(width - 40.0 - buttons_w - 4.0, 40.0), Sense::hover());
             w::paint_text_clipped(ui, tr.left_center() - Vec2::new(0.0, 8.0), &self.name, theme::font(14.0, W::SemiBold), c::TEXT, tr.width());
             let sub = if self.mute.deafened {
                 "Dźwięk wyłączony"

@@ -25,7 +25,11 @@ impl App {
                         .show(ui, |ui| {
                             ui.set_width(CARD_W - 2.0 * sp::XXL);
                             ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                                self.start_card(ui)
+                                if self.view == super::View::Profile {
+                                    self.profile_card(ui)
+                                } else {
+                                    self.start_card(ui)
+                                }
                             });
                         });
                 });
@@ -58,7 +62,37 @@ impl App {
         ui.add_space(sp::XL);
 
         w::field_label(ui, "Twoja nazwa");
-        w::text_field(ui, &mut self.name, "np. Marcin", "start_name", width);
+        let mut open_profile = false;
+        ui.horizontal(|ui| {
+            let side = 42.0;
+            let (rect, resp) = ui.allocate_exact_size(Vec2::splat(side), Sense::click());
+            let resp = resp
+                .on_hover_text("Profil: zdjęcie i nazwa")
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            let t = w::hover_t(ui, &resp);
+            w::Avatar {
+                name: &self.name,
+                color: self.my_color(),
+                image: self.my_avatar_tex.as_ref(),
+                radius: side / 2.0,
+                speaking: 0.0,
+                status: None,
+            }
+            .paint(ui, rect.center());
+            if t > 0.0 {
+                ui.painter().circle_filled(rect.center(), side / 2.0, theme::alpha(c::BG_STAGE, 0.55 * t));
+                w::paint_icon(ui, rect.center(), ic::CAMERA, 18.0, theme::alpha(c::TEXT, t), false);
+            }
+            open_profile = resp.clicked();
+            ui.add_space(sp::S - ui.spacing().item_spacing.x);
+            w::text_field(ui, &mut self.name, "np. Marcin", "start_name", width - side - sp::S);
+        });
+        if self.name.chars().count() > crate::proto::MAX_NAME {
+            self.name = self.name.chars().take(crate::proto::MAX_NAME).collect();
+        }
+        if open_profile {
+            self.open_profile();
+        }
         ui.add_space(sp::L);
 
         w::field_label(ui, "Nazwa pokoju");

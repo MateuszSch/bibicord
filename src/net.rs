@@ -22,7 +22,8 @@ type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send
 pub enum Event {
     Ready,
     Ticket(String),
-    PeerJoined { id: EndpointId, name: String },
+    PeerJoined { id: EndpointId, name: String, avatar: Option<Vec<u8>> },
+    PeerProfile { id: EndpointId, name: String, avatar: Option<Vec<u8>> },
     PeerLeft { id: EndpointId },
     PeerStream { id: EndpointId, info: Option<StreamInfo> },
     PeerVoice { id: EndpointId, on: bool },
@@ -83,6 +84,8 @@ struct Watch {
 struct State {
     in_room: bool,
     name: String,
+    /// Our profile picture (PNG), kept across rooms.
+    avatar: Option<Vec<u8>>,
     room: String,
     mute: MuteState,
     devices: crate::voice::Devices,
@@ -278,6 +281,21 @@ impl Node {
         self.emit(Event::Chat { from: None, name, text });
     }
 
+    /// Sets the picture sent to peers we meet from now on (no broadcast).
+    pub fn set_avatar(&self, avatar: Option<Vec<u8>>) {
+        self.0.state.lock().unwrap().avatar = avatar;
+    }
+
+    /// Changes name and picture and tells everyone in the room.
+    pub fn set_profile(&self, name: String, avatar: Option<Vec<u8>>) {
+        {
+            let mut s = self.0.state.lock().unwrap();
+            s.name = name.clone();
+            s.avatar = avatar.clone();
+        }
+        self.broadcast_msg(Msg::Profile { name, avatar });
+    }
+
     fn hello(&self) -> Msg {
         let s = self.0.state.lock().unwrap();
         Msg::Hello {
@@ -288,6 +306,7 @@ impl Node {
             voice: s.voice.is_some(),
             muted: s.mute.muted,
             deafened: s.mute.deafened,
+            avatar: s.avatar.clone(),
         }
     }
 
@@ -346,11 +365,13 @@ impl Node {
             (s, r)
         };
         proto::write_msg(&mut send, &self.hello()).await?;
-        let Msg::Hello { name, room, peers, stream, voice, muted, deafened } =
+        let Msg::Hello { name, room, peers, stream, voice, muted, deafened, avatar } =
             tokio::time::timeout(Duration::from_secs(15), proto::read_msg(&mut recv)).await??
         else {
             bail!("expected hello");
         };
+        let name = peer_display_name(&name, &remote);
+        let avatar = avatar.filter(|a| a.len() <= crate::avatar::MAX_BYTES);
 
         let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
         let stable = conn.stable_id();
@@ -392,7 +413,7 @@ impl Node {
         if let Some(room) = adopted_room {
             self.emit(Event::RoomName(room));
         }
-        self.emit(Event::PeerJoined { id: remote, name: name.clone() });
+        self.emit(Event::PeerJoined { id: remote, name: name.clone(), avatar });
         self.emit(Event::PeerStream { id: remote, info: stream });
         self.emit(Event::PeerVoice { id: remote, on: voice });
         self.emit(Event::PeerMute { id: remote, muted, deafened });
@@ -488,6 +509,14 @@ impl Node {
                 }
                 Msg::Mute { muted, deafened } => {
                     self.emit(Event::PeerMute { id: remote, muted, deafened });
+                }
+                Msg::Profile { name, avatar } => {
+                    let name = peer_display_name(&name, &remote);
+                    let avatar = avatar.filter(|a| a.len() <= crate::avatar::MAX_BYTES);
+                    if let Some(p) = self.0.state.lock().unwrap().peers.get_mut(&remote) {
+                        p.name = name.clone();
+                    }
+                    self.emit(Event::PeerProfile { id: remote, name, avatar });
                 }
                 Msg::Hello { .. } => {}
             }
@@ -742,6 +771,12 @@ impl Node {
     }
 }
 
+/// A peer's name as we show it; never empty.
+fn peer_display_name(name: &str, id: &EndpointId) -> String {
+    let n = proto::clean_name(name);
+    if n.is_empty() { id.fmt_short().to_string() } else { n }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -785,13 +820,15 @@ mod tests {
 
         let (a, arx) = node();
         let (b, brx) = node();
+        let pic = vec![7u8; 1000];
+        a.set_avatar(Some(pic.clone()));
         a.create_room("Ala".into(), "Test".into());
         let Event::Ticket(t) = wait_for(&arx, 20, |e| matches!(e, Event::Ticket(_))).await else {
             unreachable!()
         };
         b.join(&t, "Bob".into()).unwrap();
         wait_for(&arx, 30, |e| matches!(e, Event::PeerJoined { name, .. } if name == "Bob")).await;
-        wait_for(&brx, 30, |e| matches!(e, Event::PeerJoined { name, .. } if name == "Ala")).await;
+        wait_for(&brx, 30, |e| matches!(e, Event::PeerJoined { name, avatar: Some(p), .. } if name == "Ala" && *p == pic)).await;
 
         // A third peer joins through A and must find B on its own (mesh).
         let (c, crx) = node();
@@ -802,6 +839,12 @@ mod tests {
 
         b.send_chat("cześć".into());
         wait_for(&arx, 10, |e| matches!(e, Event::Chat { text, from: Some(_), .. } if text == "cześć")).await;
+
+        // Profile change reaches the others and is used for later chat.
+        b.set_profile("Bobek".into(), Some(pic.clone()));
+        wait_for(&arx, 10, |e| matches!(e, Event::PeerProfile { name, avatar: Some(_), .. } if name == "Bobek")).await;
+        b.send_chat("już Bobek".into());
+        wait_for(&arx, 10, |e| matches!(e, Event::Chat { name, .. } if name == "Bobek")).await;
 
         // Voice both ways; it keeps running while the stream below is watched.
         a.join_voice();
